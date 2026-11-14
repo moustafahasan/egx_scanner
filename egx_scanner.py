@@ -34,7 +34,7 @@ from datetime import datetime, timezone, timedelta, date
 # إعدادات الصفحة والتصميم البصري عالي التباين
 # ==========================================
 st.set_page_config(
-    page_title="EGX Whale Hunter Pro V7.1",
+    page_title="EGX Whale Hunter Pro V7.2",
     page_icon="🦅",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -1090,7 +1090,7 @@ def fetch_stock_news(symbol_clean: str) -> list:
 # ==========================================
 my_portfolio = load_portfolio()
 portfolio_clean_syms = [
-    item["symbol"].upper().replace(".CA", "")
+    item["symbol"].upper().replace(".CA", "").strip()
     for item in my_portfolio if item.get("symbol")
 ]
 portfolio_tickers = [f"{s}.CA" for s in portfolio_clean_syms]
@@ -1131,7 +1131,7 @@ with st.sidebar:
         ok, res_msg = send_telegram_message(
             tg_token,
             tg_chat_id,
-            "🦅 <b>EGX Whale Hunter Pro</b>\n✅ تم ربط بوت التليجرام بنجاح! ستصلك تنبيهات المحفظة هنا فوراً."
+            "🦅 <b>EGX Whale Hunter Pro V7.2</b>\n✅ تم ربط بوت التليجرام بنجاح! ستصلك تنبيهات المحفظة هنا فوراً."
         )
         if ok:
             st.success("✅ وصلت الرسالة التجريبية لتليجرام!")
@@ -1188,8 +1188,8 @@ tg_status_txt = "📲 تليجرام متصل" if (tg_token and tg_chat_id) else
 st.markdown(f"""
 <div class="hero-banner">
     <div>
-        <div class="hero-title">🦅 <span class="hero-accent">EGX WHALE HUNTER</span> PRO</div>
-        <div class="hero-sub">🌐 {len(all_egx_dynamic)} سهم ديناميكي • 💼 محفظتي • {tg_status_txt} • 🪐 جان والكواكب</div>
+        <div class="hero-title">🦅 <span class="hero-accent">EGX WHALE HUNTER</span> PRO <span style="font-size:13px;color:#FACC15;">V7.2</span></div>
+        <div class="hero-sub">🌐 {len(all_egx_dynamic)} سهم ديناميكي • 💼 محفظتي ({len(portfolio_clean_syms)}) • {tg_status_txt} • 🪐 جان والكواكب</div>
     </div>
     <div class="session-pill">{session_badge}</div>
 </div>
@@ -1231,7 +1231,7 @@ tv_fallback_map = fetch_tv_fallback_quotes(missing_port_syms) if missing_port_sy
 
 for m_sym in missing_port_syms:
     tv_q = tv_fallback_map.get(m_sym)
-    p_entry_item = next((x for x in my_portfolio if x["symbol"].upper().replace(".CA", "") == m_sym), {})
+    p_entry_item = next((x for x in my_portfolio if x["symbol"].upper().replace(".CA", "").strip() == m_sym), {})
     fallback_buy = float(p_entry_item.get("buy_price", 0.0))
 
     if tv_q and tv_q.get("close", 0) > 0:
@@ -1287,14 +1287,14 @@ today_str = datetime.now().strftime("%Y-%m-%d")
 log_changed = False
 
 for item in my_portfolio:
-    sym = item["symbol"].upper().replace(".CA", "")
+    sym = item["symbol"].upper().replace(".CA", "").strip()
     shares = int(item.get("shares", 0))
     buy_p = float(item.get("buy_price", 0.0))
     user_sl = float(item.get("stop_loss", 0.0))
     user_tp1 = float(item.get("tp1", 0.0))
     user_tp2 = float(item.get("tp2", 0.0))
 
-    if shares <= 0 or buy_p <= 0:
+    if not sym or shares <= 0 or buy_p <= 0:
         continue
 
     stock_info = all_analyzed_map.get(sym)
@@ -1422,6 +1422,9 @@ st.divider()
 if "محفظتي" in main_view:
     st.markdown("### 💼 محفظتي الشخصية والتنبيهات الفورية")
 
+    if st.session_state.get("last_port_msg"):
+        st.success(st.session_state["last_port_msg"])
+
     total_net_pnl = total_port_val - total_port_cost - (total_port_val * fee_rate)
     total_pnl_pct = ((total_net_pnl / total_port_cost) * 100) if total_port_cost > 0 else 0.0
     pnl_cls = "txt-green" if total_net_pnl >= 0 else "txt-red"
@@ -1452,20 +1455,18 @@ if "محفظتي" in main_view:
                     st.error(f"❌ تعذر الإرسال: {r_msg}")
 
     st.markdown("#### ➕ إضافة سهم جديد أو تحديث مركز في محفظتي")
-    available_clean_syms = sorted(list(set([t.replace(".CA", "") for t in all_egx_dynamic] + ["BONY"])))
     with st.form("add_stock_form", clear_on_submit=True):
         fc1, fc2, fc3 = st.columns(3)
         with fc1:
-            in_sym = st.selectbox(
-                "اختر رمز السهم:",
-                options=available_clean_syms,
-                index=available_clean_syms.index("BONY") if "BONY" in available_clean_syms else 0,
-                format_func=lambda s: f"{s} — {ticker_names_map.get(s, '')}" if ticker_names_map.get(s) else s
+            in_sym_raw = st.text_input(
+                "اكتب رمز السهم مباشرة:",
+                placeholder="مثال: BONY أو COMI",
+                help="اكتب كود السهم في البورصة المصرية بدون .CA"
             )
         with fc2:
             in_shares = st.number_input("عدد الأسهم (الكمية)", min_value=1, value=100, step=10)
         with fc3:
-            in_buy = st.number_input("متوسط سعر الشراء (ج.م)", min_value=0.01, value=10.0, step=0.1)
+            in_buy = st.number_input("متوسط سعر الشراء (ج.م)", min_value=0.01, value=5.0, step=0.1)
 
         fc4, fc5, fc6 = st.columns(3)
         with fc4:
@@ -1476,22 +1477,26 @@ if "محفظتي" in main_view:
             in_tp2 = st.number_input("الهدف الثاني TP2 (0 = آلي)", min_value=0.0, value=0.0, step=0.1)
 
         submitted = st.form_submit_button("💾 حفظ السهم في محفظتي وتفعيل التنبيهات", type="primary", use_container_width=True)
-        if submitted and in_sym:
-            updated_list = [p for p in my_portfolio if p["symbol"].upper().replace(".CA", "") != in_sym]
-            updated_list.append({
-                "symbol": in_sym,
-                "shares": int(in_shares),
-                "buy_price": float(in_buy),
-                "stop_loss": float(in_sl),
-                "tp1": float(in_tp1),
-                "tp2": float(in_tp2)
-            })
-            save_portfolio(updated_list)
-            st.success(f"✅ تم حفظ {in_sym} في محفظتك! جاري جلب بياناته وتطبيق التحليل...")
-            st.rerun()
+        if submitted:
+            clean_in = re.sub(r"[^A-Z0-9]", "", in_sym_raw.upper().replace(".CA", ""))
+            if not clean_in:
+                st.error("⚠️ من فضلك اكتب رمز السهم أولاً (مثل BONY).")
+            else:
+                updated_list = [p for p in my_portfolio if p["symbol"].upper().replace(".CA", "").strip() != clean_in]
+                updated_list.append({
+                    "symbol": clean_in,
+                    "shares": int(in_shares),
+                    "buy_price": float(in_buy),
+                    "stop_loss": float(in_sl),
+                    "tp1": float(in_tp1),
+                    "tp2": float(in_tp2)
+                })
+                save_portfolio(updated_list)
+                st.session_state["last_port_msg"] = f"✅ تم حفظ سهم ({clean_in}) بنجاح! إجمالي الأسهم في محفظتك الآن: {len(updated_list)} أسهم."
+                st.rerun()
 
     if not portfolio_rows:
-        st.info("📌 اختر رمز السهم من القائمة أعلاه واكتب الكمية وسعر الشراء ثم اضغط حفظ، وسيظهر فوراً في جدول المتابعة.")
+        st.info("📌 اكتب رمز السهم في المربع الأول (مثل BONY) ثم الكمية وسعر الشراء واضغط حفظ، وسيظهر فوراً في الجدول بالأسفل.")
     else:
         st.markdown(f"#### 📋 جدول متابعة أسهم المحفظة ({len(portfolio_rows)} أسهم)")
         p_cols = [
@@ -1521,8 +1526,9 @@ if "محفظتي" in main_view:
             st.write("")
             st.write("")
             if st.button(f"🗑️ حذف {port_selected_sym} من المحفظة", use_container_width=True):
-                new_p = [p for p in my_portfolio if p["symbol"].upper().replace(".CA", "") != port_selected_sym]
+                new_p = [p for p in my_portfolio if p["symbol"].upper().replace(".CA", "").strip() != port_selected_sym]
                 save_portfolio(new_p)
+                st.session_state["last_port_msg"] = f"🗑️ تم حذف سهم ({port_selected_sym}) من محفظتك."
                 st.rerun()
 
         p_item = next(r for r in portfolio_rows if r["الرمز"] == port_selected_sym)
