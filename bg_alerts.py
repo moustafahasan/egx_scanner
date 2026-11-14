@@ -23,13 +23,9 @@ def get_cairo_now() -> datetime:
         return datetime.now(timezone(timedelta(hours=2)))
 
 
-def is_egx_session_active(now_cairo: datetime) -> bool:
+def is_egx_trading_day(now_cairo: datetime) -> bool:
     # أيام التداول في البورصة المصرية: الأحد (6) إلى الخميس (3)
-    if now_cairo.weekday() not in [6, 0, 1, 2, 3]:
-        return False
-    mins = now_cairo.hour * 60 + now_cairo.minute
-    # من 10:00 صباحاً (600) إلى 2:40 ظهراً (880) لضمان تغطية الإغلاق والمزاد
-    return 600 <= mins <= 880
+    return now_cairo.weekday() in [6, 0, 1, 2, 3]
 
 
 def send_telegram(text_html: str) -> bool:
@@ -83,7 +79,11 @@ def fetch_tv_quotes(symbols: list) -> dict:
                     close_val = float(d[1])
                     chg_val = float(d[2]) if len(d) > 2 and d[2] is not None else 0.0
                     atr_val = float(d[3]) if len(d) > 3 and d[3] is not None and d[3] > 0 else 0.0
-                    quotes[sym] = {"close": close_val, "change": chg_val, "atr": atr_val}
+                    quotes[sym] = {
+                        "close": close_val,
+                        "change": chg_val,
+                        "atr": atr_val
+                    }
     except Exception as e:
         print(f"TradingView fetch warning: {e}")
     return quotes
@@ -109,8 +109,11 @@ def fetch_yf_fallback(symbols: list) -> dict:
             ], axis=1).max(axis=1)
             atr14 = float(tr.ewm(alpha=1/14, adjust=False).mean().iloc[-1])
             close_val = float(df["Close"].iloc[-1])
+            prev_val = float(df["Close"].iloc[-2]) if len(df) >= 2 else close_val
+            chg_pct = ((close_val - prev_val) / prev_val * 100.0) if prev_val > 0 else 0.0
             yf_data[sym] = {
                 "close": close_val,
+                "change": chg_pct,
                 "atr": atr14 if pd.notna(atr14) and atr14 > 0 else close_val * 0.025
             }
         except Exception:
@@ -121,9 +124,15 @@ def fetch_yf_fallback(symbols: list) -> dict:
 def main():
     now_cairo = get_cairo_now()
     is_manual = (EVENT_NAME == "workflow_dispatch")
+    mins = now_cairo.hour * 60 + now_cairo.minute
 
-    if not is_manual and not is_egx_session_active(now_cairo):
-        print(f"Outside EGX session ({now_cairo.strftime('%Y-%m-%d %H:%M')} Cairo). Exiting.")
+    # نافذة العمل: من 10:00 صباحاً (600) إلى 3:30 عصراً (930) بتوقيت القاهرة
+    is_within_window = is_egx_trading_day(now_cairo) and (600 <= mins <= 930)
+    # نافذة ملخص الإغلاق: بعد الساعة 2:35 ظهراً (875) بتوقيت القاهرة
+    is_post_close_window = is_egx_trading_day(now_cairo) and (875 <= mins <= 930)
+
+    if not is_manual and not is_within_window:
+        print(f"Outside EGX window ({now_cairo.strftime('%Y-%m-%d %H:%M')} Cairo). Exiting.")
         return
 
     if not os.path.exists(PORTFOLIO_FILE):
@@ -148,7 +157,6 @@ def main():
             sent_log = {}
 
     today_str = now_cairo.strftime("%Y-%m-%d")
-    # تنظيف السجل من الأيام السابقة لإبقاء الملف خفيفاً
     sent_log = {k: v for k, v in sent_log.items() if k.startswith(today_str)}
 
     symbols = sorted(list({
@@ -161,6 +169,11 @@ def main():
 
     alerts_sent_count = 0
     summary_lines = []
+
+    total_cost = 0.0
+    total_mkt_val = 0.0
+    total_prev_val = 0.0
+    total_daily_pnl = 0.0
 
     for item in portfolio:
         sym = item["symbol"].upper().replace(".CA", "").strip()
@@ -177,7 +190,13 @@ def main():
         yf_q = yf_quotes.get(sym, {})
 
         curr_p = tv_q.get("close") or yf_q.get("close") or buy_p
+        daily_chg_pct = tv_q.get("change") if tv_q.get("close") else yf_q.get("change", 0.0)
         atr14 = tv_q.get("atr") or yf_q.get("atr") or (buy_p * 0.025)
+
+        # حساب سعر إغلاق الأمس وصافي الربح/الخسارة اليومي للسهم
+        denom = 1.0 + (daily_chg_pct / 100.0)
+        prev_close_p = (curr_p / denom) if denom > 0 else curr_p
+        daily_stock_pnl = (curr_p - prev_close_p) * shares
 
         sl = user_sl if user_sl > 0 else round(max(0.01, buy_p - 2.0 * atr14), 2)
         risk_unit = max(0.01, buy_p - sl)
@@ -186,14 +205,25 @@ def main():
 
         cost_val = shares * buy_p
         mkt_val = shares * curr_p
+        prev_val = shares * prev_close_p
         net_pnl = (mkt_val - cost_val) - (mkt_val * FEE_RATE)
-        net_pnl_pct = (net_pnl / cost_val) * 100
+        net_pnl_pct = (net_pnl / cost_val) * 100.0
 
-        dist_sl_pct = ((curr_p - sl) / curr_p) * 100
-        dist_tp1_pct = ((tp1 - curr_p) / curr_p) * 100
+        total_cost += cost_val
+        total_mkt_val += mkt_val
+        total_prev_val += prev_val
+        total_daily_pnl += daily_stock_pnl
 
-        summary_lines.append(f"• <b>{sym}</b>: {curr_p} ج.م ({net_pnl_pct:+.1f}%) | SL: {sl} | TP1: {tp1}")
+        dist_sl_pct = ((curr_p - sl) / curr_p) * 100.0
+        dist_tp1_pct = ((tp1 - curr_p) / curr_p) * 100.0
 
+        day_icon = "🟢" if daily_stock_pnl > 0 else ("🔴" if daily_stock_pnl < 0 else "⚪")
+        summary_lines.append(
+            f"{day_icon} <b>{sym}</b>: <b>{curr_p}</b> ({daily_chg_pct:+.2f}% اليوم | {daily_stock_pnl:+,.0f} ج.م)\n"
+            f"    الإجمالي: {net_pnl:+,.0f} ج.م ({net_pnl_pct:+.1f}%) | SL: {sl} | TP1: {tp1}"
+        )
+
+        # إرسال التنبيهات اللحظية أثناء الجلسة
         alert_code = None
         msg_body = None
 
@@ -238,9 +268,30 @@ def main():
                     sent_log[dedup_key] = now_cairo.strftime("%H:%M")
                     alerts_sent_count += 1
 
-    if is_manual and alerts_sent_count == 0:
-        header = f"🦅 <b>فحص الخلفية التجريبي ({now_cairo.strftime('%H:%M')} القاهرة)</b>\n✅ النظام الخلفي يعمل بنجاح. ملخص محفظتك:\n\n"
-        send_telegram(header + "\n".join(summary_lines))
+    # بناء رسالة الملخص اليومي الشامل بعد إغلاق الجلسة (2:35 ظهراً) أو عند التشغيل اليدوي
+    summary_key = f"{today_str}_DAILY_SUMMARY"
+    should_send_summary = is_manual or (is_post_close_window and summary_key not in sent_log)
+
+    if should_send_summary and summary_lines:
+        total_daily_pct = ((total_daily_pnl / total_prev_val) * 100.0) if total_prev_val > 0 else 0.0
+        total_net_pnl = (total_mkt_val - total_cost) - (total_mkt_val * FEE_RATE)
+        total_net_pct = ((total_net_pnl / total_cost) * 100.0) if total_cost > 0 else 0.0
+
+        title_txt = "📊 <b>ملخص إغلاق محفظتك اليومي</b>" if not is_manual else "🦅 <b>ملخص المحفظة الشامل (فحص يدوي)</b>"
+        summary_msg = (
+            f"{title_txt} ({today_str})\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📅 <b>صافي ربح/خسارة اليوم:</b> <b>{total_daily_pnl:+,.0f} ج.م ({total_daily_pct:+.2f}%)</b>\n"
+            f"💰 <b>القيمة الحالية للمحفظة:</b> {total_mkt_val:,.0f} ج.م\n"
+            f"📈 <b>صافي الربح الإجمالي:</b> {total_net_pnl:+,.0f} ج.م ({total_net_pct:+.1f}%)\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            + "\n\n".join(summary_lines)
+        )
+
+        if send_telegram(summary_msg):
+            if not is_manual:
+                sent_log[summary_key] = now_cairo.strftime("%H:%M")
+            print("Daily summary sent successfully.")
 
     with open(TG_LOG_FILE, "w", encoding="utf-8") as f:
         json.dump(sent_log, f, ensure_ascii=False, indent=2)
