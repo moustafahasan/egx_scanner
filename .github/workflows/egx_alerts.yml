@@ -3,7 +3,7 @@ name: EGX Portfolio Background Alerts
 on:
   schedule:
     # يعمل كل 15 دقيقة من الأحد إلى الخميس (تغطي 10:00 ص إلى 2:30 م بتوقيت القاهرة صيفاً وشتاءً)
-    - cron: '*/15 7-12 * * 0-4'
+    - cron: '*/15 7-13 * * 0-4'
   workflow_dispatch:
 
 permissions:
