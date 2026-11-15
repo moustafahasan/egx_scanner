@@ -35,7 +35,7 @@ from datetime import datetime, timezone, timedelta, date
 # إعدادات الصفحة والتصميم البصري عالي التباين
 # ==========================================
 st.set_page_config(
-    page_title="EGX Whale Hunter Pro V7.3",
+    page_title="EGX Whale Hunter Pro V7.4",
     page_icon="🦅",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -249,6 +249,170 @@ def get_cairo_now() -> datetime:
     except Exception:
         return datetime.now(timezone(timedelta(hours=2)))
 
+def _safe_f(arr, idx: int, default: float = 0.0) -> float:
+    if len(arr) > idx and arr[idx] is not None:
+        try:
+            val = float(arr[idx])
+            return val if not math.isnan(val) else default
+        except Exception:
+            return default
+    return default
+
+# ==========================================
+# محرك تحليل التدفق اللحظي ورأي الصعود والهبوط
+# ==========================================
+def analyze_intraday_flow(tv_q: dict, fallback_close: float = 0.0) -> dict:
+    close_p = tv_q.get("close", 0.0) if tv_q else fallback_close
+    if close_p <= 0:
+        return {
+            "verdict": "⚪ بانتظار التداول",
+            "short_verdict": "⚪ انتظار",
+            "badge_cls": "badge-warn",
+            "flow_score": 0,
+            "vwap": 0.0,
+            "vwap_diff_pct": 0.0,
+            "bid": 0.0,
+            "ask": 0.0,
+            "spread_pct": 0.0,
+            "ba_pressure": "غير متاح خارج الجلسة",
+            "rsi15": 50.0,
+            "macd15": 0.0,
+            "macds15": 0.0,
+            "clv_pct": 50.0,
+            "rel_vol": 1.0,
+            "reasons": ["لا توجد بيانات لحظية كافية حالياً."],
+            "action_hint": "انتظر افتتاح الجلسة لتقييم السيولة اللحظية."
+        }
+
+    open_p = tv_q.get("open", close_p) or close_p
+    high_p = tv_q.get("high", close_p) or close_p
+    low_p = tv_q.get("low", close_p) or close_p
+    daily_chg = tv_q.get("change", 0.0)
+    vol = tv_q.get("volume", 0.0)
+    avg_vol10 = tv_q.get("avg_vol10", 0.0)
+    bid = tv_q.get("bid", 0.0)
+    ask = tv_q.get("ask", 0.0)
+    rsi15 = tv_q.get("rsi15", 50.0)
+    macd15 = tv_q.get("macd15", 0.0)
+    macds15 = tv_q.get("macds15", 0.0)
+
+    raw_vwap = tv_q.get("vwap", 0.0)
+    if raw_vwap > 0:
+        vwap = raw_vwap
+    elif high_p > 0 and low_p > 0:
+        vwap = (high_p + low_p + close_p) / 3.0
+    else:
+        vwap = close_p
+
+    vwap_diff_pct = ((close_p - vwap) / vwap * 100.0) if vwap > 0 else 0.0
+    clv = ((close_p - low_p) / (high_p - low_p)) if (high_p > low_p) else 0.5
+    rel_vol = (vol / avg_vol10) if (avg_vol10 > 0 and vol > 0) else 1.0
+
+    score = 0
+    reasons = []
+
+    # 1. موقع السعر مقارنة بـ VWAP (أهم معيار مؤسسي لحظي)
+    if close_p > vwap * 1.003:
+        score += 30
+        reasons.append(f"✅ السعر ({close_p}) يتداول أعلى متوسط السيولة VWAP ({vwap:.2f}) بفارق {vwap_diff_pct:+.2f}% (سيطرة مشترين).")
+    elif close_p < vwap * 0.997:
+        score -= 30
+        reasons.append(f"🔻 السعر ({close_p}) يتداول أسفل متوسط السيولة VWAP ({vwap:.2f}) بفارق {vwap_diff_pct:+.2f}% (ضغط بيعي).")
+    else:
+        reasons.append(f"⚖️ السعر ({close_p}) ملاصق لخط VWAP ({vwap:.2f}) في منطقة توازن.")
+
+    # 2. موقع السعر داخل مدى الجلسة (CLV)
+    if clv >= 0.70:
+        score += 25
+        reasons.append(f"📈 السهم يتماسك في الثلث العلوي لمدى الجلسة ({clv*100:.0f}% من القاع للقمة).")
+    elif clv <= 0.30:
+        score -= 25
+        reasons.append(f"📉 السهم يضغط قرب قاع الجلسة ({clv*100:.0f}% من مدى اليوم).")
+
+    # 3. تحليل أفضل طلب وأفضل عرض (Bid / Ask)
+    spread_pct = 0.0
+    if bid > 0 and ask > 0 and ask >= bid:
+        spread_pct = ((ask - bid) / close_p) * 100.0
+        ba_span = ask - bid
+        ba_pos = ((close_p - bid) / ba_span) if ba_span > 0 else 0.5
+        if close_p >= ask or ba_pos >= 0.65:
+            score += 15
+            ba_pressure = f"🟢 تنفيذ على العروض (طلب {bid} / عرض {ask})"
+            reasons.append(f"⚡ الصفقات تُنفَّذ قرب سعر العرض ({ask}) ما يعكس رغبة شراء ماركت.")
+        elif close_p <= bid or ba_pos <= 0.35:
+            score -= 15
+            ba_pressure = f"🔴 ضغط على الطلبات (طلب {bid} / عرض {ask})"
+            reasons.append(f"⚠️ الصفقات تُنفَّذ قرب سعر الطلب ({bid}) ما يعكس تسارع البيع.")
+        else:
+            ba_pressure = f"⚪ متوازن (طلب {bid} / عرض {ask})"
+    else:
+        if clv >= 0.65 and daily_chg > 0:
+            score += 10
+            ba_pressure = "🟢 إغلاق/تداول قرب القمة"
+        elif clv <= 0.35 and daily_chg < 0:
+            score -= 10
+            ba_pressure = "🔴 إغلاق/تداول قرب القاع"
+        else:
+            ba_pressure = "⚪ لا توجد عروض حية حالياً"
+
+    # 4. زخم الفريم اللحظي 15 دقيقة (RSI 15m + MACD 15m)
+    if rsi15 >= 56:
+        score += 15
+        reasons.append(f"🔥 زخم 15 دقيقة إيجابي (RSI 15m = {rsi15:.1f}).")
+    elif rsi15 <= 44:
+        score -= 15
+        reasons.append(f"❄️ زخم 15 دقيقة سلبي (RSI 15m = {rsi15:.1f}).")
+
+    if macd15 > macds15:
+        score += 15
+    elif macd15 < macds15:
+        score -= 15
+
+    # 5. معامل تأكيد السيولة اللحظية
+    if rel_vol >= 1.35:
+        score = int(max(-100, min(100, round(score * 1.15))))
+        reasons.append(f"💧 سيولة الجلسة مرتفعة ({rel_vol:.1f}x من متوسط 10 أيام) وتؤكد الاتجاه الحالي.")
+    elif rel_vol < 0.60:
+        reasons.append(f"💤 سيولة الجلسة ضعيفة ({rel_vol:.1f}x) — الحذر من الاختراقات الكاذبة.")
+
+    score = max(-100, min(100, score))
+
+    if score >= 30:
+        verdict = "🟢 مرشح للصعود (ضغط شرائي)"
+        short_verdict = "🟢 صعود"
+        badge_cls = "badge-bull"
+        action_hint = "المشترون يسيطرون فوق VWAP؛ الوضع يدعم الاحتفاظ أو الدخول مع الالتزام بوقف الخسارة."
+    elif score <= -30:
+        verdict = "🔴 مرشح للهبوط (ضغط بيعي)"
+        short_verdict = "🔴 هبوط"
+        badge_cls = "badge-bear"
+        action_hint = "البائعون يضغطون أسفل VWAP؛ يُنصح بالحذر وتأمين الأرباح أو تأجيل الشراء حتى استعادة VWAP."
+    else:
+        verdict = "🟡 تذبذب عرضي (انتظار)"
+        short_verdict = "🟡 تذبذب"
+        badge_cls = "badge-warn"
+        action_hint = "تعادل بين العرض والطلب؛ الأفضل انتظار اختراق واضح لـ VWAP بسيولة شرائية."
+
+    return {
+        "verdict": verdict,
+        "short_verdict": short_verdict,
+        "badge_cls": badge_cls,
+        "flow_score": score,
+        "vwap": round(vwap, 2),
+        "vwap_diff_pct": round(vwap_diff_pct, 2),
+        "bid": bid,
+        "ask": ask,
+        "spread_pct": round(spread_pct, 2),
+        "ba_pressure": ba_pressure,
+        "rsi15": round(rsi15, 1),
+        "macd15": round(macd15, 4),
+        "macds15": round(macds15, 4),
+        "clv_pct": round(clv * 100, 1),
+        "rel_vol": round(rel_vol, 2),
+        "reasons": reasons,
+        "action_hint": action_hint
+    }
+
 # ==========================================
 # محرك إرسال تنبيهات التليجرام ومنع التكرار
 # ==========================================
@@ -320,7 +484,7 @@ def detect_telegram_chat_id(bot_token: str) -> tuple:
                 msg = upd.get("message") or upd.get("channel_post") or {}
                 chat = msg.get("chat", {})
                 if chat.get("id"):
-                    return str(chat["id"]), "تم العثور على Chat ID بنجاح!"
+                    return str(chat["id"]), "تم العور على Chat ID بنجاح!"
             return None, "لم تصل رسائل للبوت بعد. افتح البوت في تليجرام واضغط Start ثم حاول مرة أخرى."
     except Exception as e:
         return None, f"تعذر الاتصال بتليجرام: {e}"
@@ -366,7 +530,7 @@ def get_egx_session_status() -> str:
     return f"🌙 الجلسة مغلقة ({now_cairo.strftime('%H:%M')} القاهرة)"
 
 # ==========================================
-# محرك جلب كل أسهم البورصة المصرية ديناميكياً + أسعار TradingView اللحظية
+# محرك جلب كل أسهم البورصة المصرية ديناميكياً + التدفق اللحظي TradingView
 # ==========================================
 LEADERS_EGX_TICKERS = [
     "COMI.CA", "TMGH.CA", "SWDY.CA", "ETEL.CA", "EFIH.CA", "FWRY.CA",
@@ -475,7 +639,7 @@ def fetch_dynamic_egx_universe() -> tuple:
 
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_tv_live_quotes(clean_symbols: tuple) -> tuple:
-    """جلب الأسعار اللحظية لجميع الأسهم من TradingView كل 60 ثانية"""
+    """جلب الأسعار اللحظية وبيانات التدفق (VWAP, Bid/Ask, RSI 15m, MACD 15m) من TradingView كل 60 ثانية"""
     quotes = {}
     fetched_time = get_cairo_now().strftime("%H:%M:%S")
     if not clean_symbols:
@@ -487,7 +651,11 @@ def fetch_tv_live_quotes(clean_symbols: tuple) -> tuple:
                 "tickers": [f"EGX:{s.upper().replace('.CA', '')}" for s in clean_symbols],
                 "query": {"types": []}
             },
-            "columns": ["name", "close", "change", "volume", "ATR"]
+            "columns": [
+                "name", "close", "change", "open", "high", "low",
+                "volume", "ATR", "VWAP", "bid", "ask",
+                "RSI|15", "MACD.macd|15", "MACD.signal|15", "average_volume_10d_calc"
+            ]
         }).encode("utf-8")
         req = urllib.request.Request(
             url,
@@ -501,15 +669,23 @@ def fetch_tv_live_quotes(clean_symbols: tuple) -> tuple:
                 d = row.get("d", [])
                 if ":" in full_s and len(d) >= 2 and d[1] is not None:
                     sym = full_s.split(":")[1].strip().upper()
-                    close_val = float(d[1])
-                    chg_val = float(d[2]) if len(d) > 2 and d[2] is not None else 0.0
-                    vol_val = float(d[3]) if len(d) > 3 and d[3] is not None else 0.0
-                    atr_val = float(d[4]) if len(d) > 4 and d[4] is not None and d[4] > 0 else (close_val * 0.025)
+                    close_val = _safe_f(d, 1, 0.0)
+                    atr_raw = _safe_f(d, 7, 0.0)
                     quotes[sym] = {
                         "close": close_val,
-                        "change": chg_val,
-                        "volume": vol_val,
-                        "atr": atr_val
+                        "change": _safe_f(d, 2, 0.0),
+                        "open": _safe_f(d, 3, close_val),
+                        "high": _safe_f(d, 4, close_val),
+                        "low": _safe_f(d, 5, close_val),
+                        "volume": _safe_f(d, 6, 0.0),
+                        "atr": atr_raw if atr_raw > 0 else (close_val * 0.025),
+                        "vwap": _safe_f(d, 8, 0.0),
+                        "bid": _safe_f(d, 9, 0.0),
+                        "ask": _safe_f(d, 10, 0.0),
+                        "rsi15": _safe_f(d, 11, 50.0),
+                        "macd15": _safe_f(d, 12, 0.0),
+                        "macds15": _safe_f(d, 13, 0.0),
+                        "avg_vol10": _safe_f(d, 14, 0.0),
                     }
     except Exception:
         pass
@@ -901,11 +1077,17 @@ def analyze_stock_pro(ticker: str, df: pd.DataFrame, market_median_ret20: float,
     clean_symbol = ticker.replace(".CA", "")
     tv_url = f"https://www.tradingview.com/chart/?symbol=EGX:{clean_symbol}"
 
+    default_flow = analyze_intraday_flow(
+        {"close": close, "open": open_p, "high": high, "low": low, "change": pct_change * 100, "volume": vol, "avg_vol10": vol_sma20},
+        fallback_close=close
+    )
+
     return {
         "الرمز": clean_symbol,
         "Ticker": ticker,
         "السكور": score,
         "نوع الإشارة": setup_type,
+        "الرأي اللحظي": default_flow["short_verdict"],
         "الإغلاق": round(close, 2),
         "ATR14": round(atr14, 3),
         "التغير %": round(pct_change * 100, 2),
@@ -923,6 +1105,8 @@ def analyze_stock_pro(ticker: str, df: pd.DataFrame, market_median_ret20: float,
         "التشخيص الفني": " | ".join(tags) if tags else "لا يوجد زخم",
         "البيانات": data_warning,
         "score_parts": {"الاتجاه (30)": pts_trend, "وايكوف (35)": pts_wyckoff, "هيكل SMC (20)": pts_smc, "القوة النسبية (15)": pts_rs},
+        "intraday_flow": default_flow,
+        "tv_raw": {},
         "TradingView": tv_url,
         "df": df
     }
@@ -1141,7 +1325,7 @@ with st.sidebar:
         ok, res_msg = send_telegram_message(
             tg_token,
             tg_chat_id,
-            "🦅 <b>EGX Whale Hunter Pro V7.3</b>\n✅ تم ربط بوت التليجرام بنجاح! ستصلك تنبيهات المحفظة هنا فوراً."
+            "🦅 <b>EGX Whale Hunter Pro V7.4</b>\n✅ تم ربط بوت التليجرام بنجاح! ستصلك تنبيهات المحفظة ونبض التدفق اللحظي هنا."
         )
         if ok:
             st.success("✅ وصلت الرسالة التجريبية لتليجرام!")
@@ -1198,8 +1382,8 @@ tg_status_txt = "📲 تليجرام متصل" if (tg_token and tg_chat_id) else
 st.markdown(f"""
 <div class="hero-banner">
     <div>
-        <div class="hero-title">🦅 <span class="hero-accent">EGX WHALE HUNTER</span> PRO <span style="font-size:13px;color:#FACC15;">V7.3</span></div>
-        <div class="hero-sub">🌐 {len(all_egx_dynamic)} سهم ديناميكي • 💼 محفظتي ({len(portfolio_clean_syms)}) • {tg_status_txt} • 🪐 جان والكواكب</div>
+        <div class="hero-title">🦅 <span class="hero-accent">EGX WHALE HUNTER</span> PRO <span style="font-size:13px;color:#FACC15;">V7.4</span></div>
+        <div class="hero-sub">🌐 {len(all_egx_dynamic)} سهم • 💼 محفظتي ({len(portfolio_clean_syms)}) • ⚡ التدفق اللحظي وعمق السوق • {tg_status_txt}</div>
     </div>
     <div class="session-pill">{session_badge}</div>
 </div>
@@ -1235,12 +1419,11 @@ for ticker, df_stock in market_data_map.items():
         if avg_t >= (min_turnover_m * 1_000_000) and len(df_stock) >= 205 and res["التغير %"] < 19.5:
             scanner_results.append(res)
 
-# سحب الأسعار اللحظية من TradingView لجميع أسهم المحفظة + أفضل 40 سهم في الرادار (تتجدد كل 60 ثانية)
-top_radar_syms = [r["الرمز"] for r in sorted(scanner_results, key=lambda x: x["السكور"], reverse=True)[:40]]
+# سحب الأسعار اللحظية + بيانات التدفق (VWAP, Bid/Ask, 15m RSI/MACD) من TradingView كل 60 ثانية
+top_radar_syms = [r["الرمز"] for r in sorted(scanner_results, key=lambda x: x["السكور"], reverse=True)[:45]]
 live_query_syms = tuple(sorted(list(set(portfolio_clean_syms + top_radar_syms))))
 tv_live_map, last_live_sync = fetch_tv_live_quotes(live_query_syms)
 
-# دمج السعر اللحظي من TradingView فوق بيانات Yahoo Finance المتأخرة أثناء الجلسة
 for sym, tv_q in tv_live_map.items():
     if tv_q.get("close", 0) > 0 and sym in all_analyzed_map:
         live_c = round(tv_q["close"], 2)
@@ -1254,10 +1437,15 @@ for sym, tv_q in tv_live_map.items():
         all_analyzed_map[sym]["TP2"] = round(live_c + (2.618 * r_u), 2)
         all_analyzed_map[sym]["TP3"] = round(live_c + (3.618 * r_u), 2)
 
+        flow_res = analyze_intraday_flow(tv_q, fallback_close=live_c)
+        all_analyzed_map[sym]["intraday_flow"] = flow_res
+        all_analyzed_map[sym]["الرأي اللحظي"] = flow_res["short_verdict"]
+        all_analyzed_map[sym]["tv_raw"] = tv_q
+
 # إضافة أي سهم في المحفظة غير متوفر على Yahoo Finance (مثل BONY)
 missing_port_syms = [s for s in portfolio_clean_syms if s not in all_analyzed_map]
 for m_sym in missing_port_syms:
-    tv_q = tv_live_map.get(m_sym)
+    tv_q = tv_live_map.get(m_sym, {})
     p_entry_item = next((x for x in my_portfolio if x["symbol"].upper().replace(".CA", "").strip() == m_sym), {})
     fallback_buy = float(p_entry_item.get("buy_price", 0.0))
 
@@ -1270,6 +1458,7 @@ for m_sym in missing_port_syms:
         atr_val = round(max(0.01, c_val * 0.025), 3)
         diag_txt = "⏳ بانتظار بيانات التداول (يُعرض سعر الشراء مؤقتاً)"
 
+    flow_res = analyze_intraday_flow(tv_q, fallback_close=c_val)
     sl_val = round(max(0.01, c_val - 2.0 * atr_val), 2)
     r_share = max(0.01, c_val - sl_val)
     all_analyzed_map[m_sym] = {
@@ -1277,6 +1466,7 @@ for m_sym in missing_port_syms:
         "Ticker": f"{m_sym}.CA",
         "السكور": 0,
         "نوع الإشارة": "🆕 إدراج حديث",
+        "الرأي اللحظي": flow_res["short_verdict"],
         "الإغلاق": c_val,
         "ATR14": atr_val,
         "التغير %": round(tv_q["change"], 2) if tv_q else 0.0,
@@ -1294,6 +1484,8 @@ for m_sym in missing_port_syms:
         "التشخيص الفني": diag_txt,
         "البيانات": "🆕 TradingView",
         "score_parts": {"الاتجاه (30)": 0, "وايكوف (35)": 0, "هيكل SMC (20)": 0, "القوة النسبية (15)": 0},
+        "intraday_flow": flow_res,
+        "tv_raw": tv_q,
         "TradingView": f"https://www.tradingview.com/chart/?symbol=EGX:{m_sym}",
         "df": None
     }
@@ -1327,6 +1519,7 @@ for item in my_portfolio:
     stock_info = all_analyzed_map.get(sym)
     curr_p = stock_info["الإغلاق"] if (stock_info and stock_info["الإغلاق"] > 0) else buy_p
     atr14 = stock_info["ATR14"] if stock_info else round(buy_p * 0.025, 3)
+    short_opinion = stock_info["الرأي اللحظي"] if stock_info else "⚪ انتظار"
 
     sl = user_sl if user_sl > 0 else round(max(0.01, buy_p - 2.0 * atr14), 2)
     risk_unit = max(0.01, buy_p - sl)
@@ -1388,6 +1581,7 @@ for item in my_portfolio:
 
     portfolio_rows.append({
         "الرمز": sym,
+        "الرأي اللحظي": short_opinion,
         "حالة التنبيه": alert_status,
         "السكور الفني": stock_info["السكور"] if stock_info else 0,
         "الكمية": shares,
@@ -1413,7 +1607,7 @@ if tg_auto_whales and tg_token and tg_chat_id:
             w_key = f"{today_str}_WHALE_{r['الرمز']}"
             if w_key not in sent_tg_log:
                 w_msg = (
-                    f"🐋 <b>إشارة حيتان جديدة — {r['الرمز']}</b>\n"
+                    f"🐋 <b>إشارة حيتان جديدة — {r['الرمز']}</b> ({r['الرأي اللحظي']})\n"
                     f"السكور: <b>{r['السكور']}/100</b> ({r['نوع الإشارة']})\n"
                     f"السعر: <b>{r['الإغلاق']}</b> | الوقف: <b>{r['الوقف (2xATR)']}</b> | TP1: <b>{r['TP1']}</b>"
                 )
@@ -1434,7 +1628,7 @@ if active_alerts:
 # ==========================================
 ref_c1, ref_c2 = st.columns([2, 1])
 with ref_c1:
-    st.caption(f"📡 مصدر الأسعار اللحظية: **TradingView مباشر** | آخر تحديث: **{last_live_sync}** بتوقيت القاهرة (يتحدث تلقائياً كل 60 ثانية)")
+    st.caption(f"📡 مصدر التدفق اللحظي: **TradingView مباشر** | آخر تحديث: **{last_live_sync}** بتوقيت القاهرة (يتحدث تلقائياً كل 60 ثانية)")
 with ref_c2:
     if st.button("🔄 تحديث الأسعار اللحظية الآن", use_container_width=True):
         fetch_tv_live_quotes.clear()
@@ -1477,19 +1671,23 @@ if "محفظتي" in main_view:
     st.write("")
 
     if portfolio_rows:
-        if st.button("📲 إرسال تقرير محفظتي الكامل الآن إلى تليجرام", use_container_width=True):
+        if st.button("📲 إرسال تقرير محفظتي ونبض التدفق اللحظي الآن إلى تليجرام", use_container_width=True):
             if not tg_token or not tg_chat_id:
                 st.warning("⚠️ افتح القائمة الجانبية (>) وأدخل Bot Token و Chat ID أولاً.")
             else:
-                lines = [f"📊 <b>تقرير محفظتك في البورصة المصرية</b>", f"القيمة: <b>{total_port_val:,.0f} ج.م</b> | الصافي: <b>{total_net_pnl:+,.0f} ج.م ({total_pnl_pct:+.1f}%)</b>", ""]
+                lines = [
+                    f"📊 <b>تقرير محفظتك ونبض التدفق اللحظي</b>",
+                    f"القيمة: <b>{total_port_val:,.0f} ج.م</b> | الصافي: <b>{total_net_pnl:+,.0f} ج.م ({total_pnl_pct:+.1f}%)</b>",
+                    ""
+                ]
                 for pr in portfolio_rows:
                     lines.append(
-                        f"• <b>{pr['الرمز']}</b>: السعر {pr['السعر الحالي']} ({pr['العائد %']:+.1f}%) | "
-                        f"SL: {pr['وقف الخسارة']} | TP1: {pr['TP1']} — {pr['حالة التنبيه']}"
+                        f"• <b>{pr['الرمز']}</b> ({pr['الرأي اللحظي']}): السعر {pr['السعر الحالي']} ({pr['العائد %']:+.1f}%) | "
+                        f"SL: {pr['وقف الخسارة']} | TP1: {pr['TP1']}"
                     )
                 ok, r_msg = send_telegram_message(tg_token, tg_chat_id, "\n".join(lines))
                 if ok:
-                    st.success("✅ تم إرسال تقرير المحفظة إلى بوت التليجرام!")
+                    st.success("✅ تم إرسال التقرير إلى بوت التليجرام!")
                 else:
                     st.error(f"❌ تعذر الإرسال: {r_msg}")
 
@@ -1539,7 +1737,7 @@ if "محفظتي" in main_view:
     else:
         st.markdown(f"#### 📋 جدول متابعة أسهم المحفظة ({len(portfolio_rows)} أسهم)")
         p_cols = [
-            "الرمز", "حالة التنبيه", "السكور الفني", "الكمية", "متوسط الشراء",
+            "الرمز", "الرأي اللحظي", "حالة التنبيه", "السكور الفني", "الكمية", "متوسط الشراء",
             "السعر الحالي", "تغير اليوم %", "صافي الربح/الخسارة", "العائد %",
             "وقف الخسارة", "بُعد الوقف %", "TP1", "بُعد TP1 %", "TP2", "TradingView"
         ]
@@ -1601,19 +1799,19 @@ if "محفظتي" in main_view:
                 )
                 st.plotly_chart(fig_p, use_container_width=True)
             else:
-                st.info(f"ℹ️ الرسم البياني التاريخي لـ **{port_selected_sym}** غير متوفر بعد على Yahoo Finance (سهم حديث الإدراج). يتم تحديث السعر اللحظي ومستويات الوقف والأهداف من TradingView تلقائياً.")
+                st.info(f"ℹ️ الرسم البياني التاريخي لـ **{port_selected_sym}** غير متوفر بعد على Yahoo Finance. يتم تحديث السعر والتدفق اللحظي من TradingView تلقائياً.")
 
         with pc_info:
             item_pnl_cls = "txt-green" if p_item["صافي الربح/الخسارة"] >= 0 else "txt-red"
+            flow_obj = p_sinfo["intraday_flow"] if p_sinfo else {}
             st.markdown(f"""
             <div class="pro-card">
                 <h4 class="txt-cyan" style="margin-top:0;">💼 بطاقة السهم: {port_selected_sym}</h4>
+                <p><span class="{flow_obj.get('badge_cls', 'badge-warn')}">{flow_obj.get('verdict', p_item['الرأي اللحظي'])}</span></p>
                 <p><span class="badge-bull">{p_item['حالة التنبيه']}</span></p>
-                <p class="txt-white"><b>السكور الفني الحالي:</b> {p_item['السكور الفني']}/100</p>
-                <p class="txt-muted" style="font-size:13px;">{p_item['التشخيص الفني']}</p>
+                <p class="txt-white"><b>السكور الفني:</b> {p_item['السكور الفني']}/100 | <b>VWAP:</b> {flow_obj.get('vwap', p_item['السعر الحالي'])}</p>
                 <hr style="border-color:#26334D;">
-                <p class="txt-white"><b>الكمية:</b> {p_item['الكمية']:,} سهم</p>
-                <p class="txt-white"><b>متوسط الشراء:</b> {p_item['متوسط الشراء']} ج.م</p>
+                <p class="txt-white"><b>الكمية:</b> {p_item['الكمية']:,} سهم | <b>متوسط الشراء:</b> {p_item['متوسط الشراء']} ج.م</p>
                 <p class="txt-white"><b>السعر الحالي:</b> {p_item['السعر الحالي']} ج.م ({p_item['تغير اليوم %']:+.2f}% اليوم)</p>
                 <p class="txt-white"><b>صافي الربح/الخسارة:</b> <span class="{item_pnl_cls}" style="font-weight:bold;">{p_item['صافي الربح/الخسارة']:+,.0f} ج.م ({p_item['العائد %']:+.2f}%)</span></p>
                 <hr style="border-color:#26334D;">
@@ -1683,7 +1881,7 @@ else:
                     <span class="txt-cyan" style="font-size:18px;font-weight:800;">السكور: {item['السكور']}/100</span>
                 </div>
                 <div style="font-size:13px;margin-bottom:8px;" class="txt-muted">
-                    السعر: <b class="txt-white">{item['الإغلاق']} ج.م</b> (<span class="{chg_cls}">{item['التغير %']:+.2f}%</span>) • فوليوم: <b class="txt-white">{item['الفوليوم']}x</b>
+                    السعر: <b class="txt-white">{item['الإغلاق']} ج.م</b> (<span class="{chg_cls}">{item['التغير %']:+.2f}%</span>) • {item['الرأي اللحظي']}
                 </div>
                 <div style="display:flex;justify-content:space-between;background:#0B0F19;padding:8px 10px;border-radius:8px;font-size:12px;">
                     <span>🛑 الوقف: <b class="txt-red">{item['الوقف (2xATR)']}</b></span>
@@ -1695,10 +1893,10 @@ else:
 
         st.markdown(f"#### 📋 جدول الصفقات المحتملة ({len(filtered_results)} سهم)")
         display_cols = [
-            "الرمز", "السكور", "نوع الإشارة", "الإغلاق", "التغير %",
+            "الرمز", "السكور", "الرأي اللحظي", "نوع الإشارة", "الإغلاق", "التغير %",
             "الفوليوم", "القوة النسبية %", "السيولة (مليون)",
             "الوقف (2xATR)", "TP1", "TP2", "الأسهم", "صافي TP1",
-            "البيانات", "TradingView"
+            "TradingView"
         ]
         st.dataframe(
             pd.DataFrame(filtered_results)[display_cols],
@@ -1714,7 +1912,7 @@ else:
         st.warning("⚠️ لا توجد أسهم تطابق شروط السكانر الحالية. افتح القائمة الجانبية (>) لتقليل الحد الأدنى للسكور أو السيولة.")
 
 # ==============================================================================
-# الدراسة العميقة المشتركة (تعمل على أي سهم في محفظتك أو في السوق)
+# الدراسة العميقة المشتركة (التدفق اللحظي وعمق السوق + الشارت + المالي + الزمني + الخبري)
 # ==============================================================================
 combined_symbols = sorted(list(set([r["الرمز"] for r in portfolio_rows] + [r["الرمز"] for r in filtered_results])))
 if not combined_symbols and all_analyzed_map:
@@ -1722,12 +1920,12 @@ if not combined_symbols and all_analyzed_map:
 
 if combined_symbols:
     st.divider()
-    sel_col1, _ = st.columns([1.5, 1])
+    sel_col1, _ = st.columns([1.6, 1])
     with sel_col1:
         selected_symbol = st.selectbox(
-            "🔬 اختر أي سهم (من محفظتك أو من السوق) للدراسة الفنية والمالية والزمنية والخبرية:",
+            "🔬 اختر أي سهم (من محفظتك أو من السوق) للدراسة اللحظية والفنية والمالية:",
             options=combined_symbols,
-            format_func=lambda sym: f"{'💼 [محفظتي] ' if sym in [p['الرمز'] for p in portfolio_rows] else '🎯 '}{sym}  |  السكور: {all_analyzed_map[sym]['السكور']}/100"
+            format_func=lambda sym: f"{'💼 [محفظتي] ' if sym in [p['الرمز'] for p in portfolio_rows] else '🎯 '}{sym}  |  {all_analyzed_map[sym]['الرأي اللحظي']}  |  السكور: {all_analyzed_map[sym]['السكور']}/100"
         )
     selected_data = all_analyzed_map[selected_symbol]
     has_hist_df = selected_data.get("df") is not None and not selected_data["df"].empty
@@ -1735,6 +1933,7 @@ if combined_symbols:
     sub_view = st.radio(
         "📑 اختر نوع التحليل التفصيلي:",
         options=[
+            "⚡ التدفق اللحظي وعمق السوق",
             "📈 الشارت الفني وخطة التنفيذ",
             "📊 التحليل المالي (F-Score)",
             "🪐 التحليل الزمني (جان والكواكب)",
@@ -1743,7 +1942,98 @@ if combined_symbols:
         horizontal=True
     )
 
-    if "الشارت الفني" in sub_view:
+    if "التدفق اللحظي" in sub_view:
+        flow = selected_data["intraday_flow"]
+        tv_r = selected_data.get("tv_raw", {})
+        st.markdown(f"#### ⚡ تحليل التدفق اللحظي ورأي الاتجاه أثناء الجلسة: {selected_symbol}")
+
+        fk1, fk2, fk3, fk4 = st.columns(4)
+        vwap_cls = "txt-green" if flow["vwap_diff_pct"] >= 0 else "txt-red"
+        fk1.markdown(f'<div class="kpi-card"><div class="kpi-label">🧭 القرار اللحظي</div><div class="kpi-val" style="font-size:16px;">{flow["short_verdict"]} ({flow["flow_score"]:+d})</div></div>', unsafe_allow_html=True)
+        fk2.markdown(f'<div class="kpi-card"><div class="kpi-label">⚖️ متوسط السيولة VWAP</div><div class="kpi-val {vwap_cls}">{flow["vwap"]} ({flow["vwap_diff_pct"]:+.2f}%)</div></div>', unsafe_allow_html=True)
+        fk3.markdown(f'<div class="kpi-card"><div class="kpi-label">⏱️ زخم 15 دقيقة (RSI)</div><div class="kpi-val txt-cyan">{flow["rsi15"]}</div></div>', unsafe_allow_html=True)
+        fk4.markdown(f'<div class="kpi-card" style="border-top-color:#FACC15;"><div class="kpi-label">📊 موقع السعر بمدى اليوم</div><div class="kpi-val txt-gold">{flow["clv_pct"]}%</div></div>', unsafe_allow_html=True)
+
+        st.write("")
+        fl_col1, fl_col2 = st.columns([1.2, 1])
+
+        with fl_col1:
+            reasons_html = "".join([f"<li style='margin-bottom:6px;'>{r_txt}</li>" for r_txt in flow["reasons"]])
+            st.markdown(f"""
+            <div class="pro-card">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+                    <h4 class="txt-cyan" style="margin:0;">🩺 التشخيص اللحظي: {selected_symbol}</h4>
+                    <span class="{flow['badge_cls']}">{flow['verdict']}</span>
+                </div>
+                <p class="txt-white"><b>أفضل طلب وعرض:</b> {flow['ba_pressure']} (السبريد: {flow['spread_pct']}%)</p>
+                <p class="txt-white"><b>مؤشر MACD (15 دقيقة):</b> {flow['macd15']} مقابل الإشارة {flow['macds15']}</p>
+                <hr style="border-color:#26334D;">
+                <ul class="txt-white" style="padding-right:18px;font-size:14px;">
+                    {reasons_html}
+                </ul>
+                <div style="background:#0B0F19;padding:10px 12px;border-radius:8px;border-right:4px solid #38BDF8;margin-top:10px;">
+                    <b class="txt-gold">💡 الخلاصة التنفيذية:</b> <span class="txt-white">{flow['action_hint']}</span>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        with fl_col2:
+            st.markdown("""
+            <div class="pro-card" style="border-right-color:#FACC15;">
+                <h4 class="txt-gold" style="margin-top:0;">📖 حاسبة اختلال عمق السوق (Order Book Imbalance)</h4>
+                <p class="txt-muted" style="font-size:13px;">أدخل إجمالي كمية الطلبات والعروض الظاهرة أمامك على شاشة Thndr أو مباشر لكشف السيولة الحقيقية من الجدران الوهمية:</p>
+            </div>
+            """, unsafe_allow_html=True)
+
+            ob_c1, ob_c2 = st.columns(2)
+            with ob_c1:
+                bid_qty = st.number_input("🟢 إجمالي كمية الطلبات (Bid Qty):", min_value=0, value=150000, step=10000, key=f"bid_q_{selected_symbol}")
+            with ob_c2:
+                ask_qty = st.number_input("🔴 إجمالي كمية العروض (Ask Qty):", min_value=0, value=80000, step=10000, key=f"ask_q_{selected_symbol}")
+
+            top_wall_qty = st.number_input("🧱 أكبر كمية معلقة على سعر واحد (اختياري لكشف التلاعب):", min_value=0, value=0, step=10000, key=f"wall_q_{selected_symbol}")
+
+            total_ob = bid_qty + ask_qty
+            if total_ob > 0:
+                imb_pct = ((bid_qty - ask_qty) / total_ob) * 100.0
+                ba_ratio = bid_qty / max(1, ask_qty)
+                avg_v10 = tv_r.get("avg_vol10", 0.0)
+
+                wall_warning = ""
+                if top_wall_qty > 0 and avg_v10 > 0 and top_wall_qty >= (avg_v10 * 0.25):
+                    wall_warning = f"<p class='txt-gold' style='margin-top:8px;'>⚠️ <b>تنبيه جدار ضخم (Spoofing المحتمل):</b> الكمية المعلقة ({top_wall_qty:,}) تمثل أكثر من 25% من متوسط تداول السهم اليومي؛ راقب هل تُسحب عند اقتراب السعر أم تُنفَّذ.</p>"
+
+                if imb_pct >= 20.0:
+                    ob_verdict = "🟢 تفوق شرائي واضح في العمق (الطلبات تبتلع العروض)"
+                    ob_cls = "txt-green"
+                elif imb_pct <= -20.0:
+                    ob_verdict = "🔴 ضغط بيعي واضح في العمق (العروض تتفوق على الطلبات)"
+                    ob_cls = "txt-red"
+                else:
+                    ob_verdict = "🟡 توازن نسبي في عمق الطلبات والعروض"
+                    ob_cls = "txt-gold"
+
+                # دمج رأي عمق السوق مع التدفق اللحظي
+                if imb_pct >= 20.0 and flow["flow_score"] >= 20:
+                    combined_call = "🚀 <b>توافق صعودي قوي:</b> السعر فوق VWAP والطلبات تتفوق في العمق."
+                elif imb_pct <= -20.0 and flow["flow_score"] <= -20:
+                    combined_call = "🚨 <b>توافق هبوطي:</b> كسر VWAP مع ضغط عروض بيعية في العمق."
+                elif imb_pct <= -25.0 and flow["flow_score"] >= 25:
+                    combined_call = "🐋 <b>احتمال امتصاص حيتان:</b> عروض كبيرة في العمق لكن السعر صامد أعلى VWAP (قد تكون عروض تخويف للتجميع)."
+                else:
+                    combined_call = "⚖️ <b>قراءة متباينة:</b> راقب سرعة تنفيذ الصفقات على العروض قبل زيادة الكمية."
+
+                st.markdown(f"""
+                <div class="pro-card">
+                    <p class="txt-white"><b>نسبة اختلال العمق (Imbalance):</b> <span class="{ob_cls}" style="font-size:17px;font-weight:bold;">{imb_pct:+.1f}%</span> (نسبة الطلب/العرض: {ba_ratio:.2f}x)</p>
+                    <p class="{ob_cls}"><b>تقييم العمق:</b> {ob_verdict}</p>
+                    {wall_warning}
+                    <hr style="border-color:#26334D;">
+                    <p class="txt-white" style="margin-bottom:0;">{combined_call}</p>
+                </div>
+                """, unsafe_allow_html=True)
+
+    elif "الشارت الفني" in sub_view:
         if not has_hist_df:
             st.info(f"ℹ️ السهم **{selected_symbol}** حديث الإدراج ولا يمتلك شموعاً تاريخية على Yahoo Finance بعد. السعر اللحظي الحالي من TradingView: **{selected_data['الإغلاق']} ج.م**.")
             st.link_button(f"🚀 افتح شارت {selected_symbol} على TradingView ↗", selected_data["TradingView"], use_container_width=True)
