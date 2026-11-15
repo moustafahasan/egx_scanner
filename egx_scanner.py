@@ -2,6 +2,7 @@ import os
 import re
 import math
 import json
+from zoneinfo import ZoneInfo
 
 # ==========================================
 # فرض الثيم الداكن والخط الأبيض على Streamlit تلقائياً
@@ -34,7 +35,7 @@ from datetime import datetime, timezone, timedelta, date
 # إعدادات الصفحة والتصميم البصري عالي التباين
 # ==========================================
 st.set_page_config(
-    page_title="EGX Whale Hunter Pro V7.2",
+    page_title="EGX Whale Hunter Pro V7.3",
     page_icon="🦅",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -240,6 +241,15 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
+# التوقيت المحلي للقاهرة
+# ==========================================
+def get_cairo_now() -> datetime:
+    try:
+        return datetime.now(ZoneInfo("Africa/Cairo"))
+    except Exception:
+        return datetime.now(timezone(timedelta(hours=2)))
+
+# ==========================================
 # محرك إرسال تنبيهات التليجرام ومنع التكرار
 # ==========================================
 TG_LOG_FILE = "tg_alerts_log.json"
@@ -347,8 +357,7 @@ def save_portfolio(portfolio_list: list):
 # دالة تحديد حالة جلسة البورصة المصرية بتوقيت القاهرة
 # ==========================================
 def get_egx_session_status() -> str:
-    cairo_tz = timezone(timedelta(hours=2))
-    now_cairo = datetime.now(cairo_tz)
+    now_cairo = get_cairo_now()
     weekday = now_cairo.weekday()
     is_trading_day = weekday in [6, 0, 1, 2, 3]
     current_minutes = now_cairo.hour * 60 + now_cairo.minute
@@ -357,7 +366,7 @@ def get_egx_session_status() -> str:
     return f"🌙 الجلسة مغلقة ({now_cairo.strftime('%H:%M')} القاهرة)"
 
 # ==========================================
-# محرك جلب كل أسهم البورصة المصرية ديناميكياً + أسعار بديلة
+# محرك جلب كل أسهم البورصة المصرية ديناميكياً + أسعار TradingView اللحظية
 # ==========================================
 LEADERS_EGX_TICKERS = [
     "COMI.CA", "TMGH.CA", "SWDY.CA", "ETEL.CA", "EFIH.CA", "FWRY.CA",
@@ -464,12 +473,13 @@ def fetch_dynamic_egx_universe() -> tuple:
     merged_list = sorted(list(dynamic_symbols.union(set(FALLBACK_EGX_TICKERS))))
     return merged_list, names_map, source_status
 
-@st.cache_data(ttl=600, show_spinner=False)
-def fetch_tv_fallback_quotes(clean_symbols: tuple) -> dict:
-    """جلب السعر اللحظي والـ ATR من TradingView للأسهم حديثة الإدراج غير المتوفرة على Yahoo Finance"""
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_tv_live_quotes(clean_symbols: tuple) -> tuple:
+    """جلب الأسعار اللحظية لجميع الأسهم من TradingView كل 60 ثانية"""
     quotes = {}
+    fetched_time = get_cairo_now().strftime("%H:%M:%S")
     if not clean_symbols:
-        return quotes
+        return quotes, fetched_time
     try:
         url = "https://scanner.tradingview.com/egypt/scan"
         payload = json.dumps({
@@ -503,7 +513,7 @@ def fetch_tv_fallback_quotes(clean_symbols: tuple) -> dict:
                     }
     except Exception:
         pass
-    return quotes
+    return quotes, fetched_time
 
 # ==========================================
 # محرك الحسابات الفلكية ومعادلات جان
@@ -638,7 +648,7 @@ def compute_gann_and_planetary(pivot_date: date, pivot_price: float, is_pivot_lo
 
     price_time_sq = max(15, int(round(sqrt_p * 10)))
     classic_cycles = sorted(list(set([45, 60, 90, 120, 144, 180, 270, 360, price_time_sq])))
-    today = datetime.now().date()
+    today = get_cairo_now().date()
 
     time_targets = []
     for cyc in classic_cycles:
@@ -1131,7 +1141,7 @@ with st.sidebar:
         ok, res_msg = send_telegram_message(
             tg_token,
             tg_chat_id,
-            "🦅 <b>EGX Whale Hunter Pro V7.2</b>\n✅ تم ربط بوت التليجرام بنجاح! ستصلك تنبيهات المحفظة هنا فوراً."
+            "🦅 <b>EGX Whale Hunter Pro V7.3</b>\n✅ تم ربط بوت التليجرام بنجاح! ستصلك تنبيهات المحفظة هنا فوراً."
         )
         if ok:
             st.success("✅ وصلت الرسالة التجريبية لتليجرام!")
@@ -1177,7 +1187,7 @@ with st.sidebar:
     if st.button("🔄 تحديث القائمة والأسعار الآن", type="primary", use_container_width=True):
         fetch_dynamic_egx_universe.clear()
         fetch_all_market_data.clear()
-        fetch_tv_fallback_quotes.clear()
+        fetch_tv_live_quotes.clear()
         st.rerun()
 
 # ==========================================
@@ -1188,7 +1198,7 @@ tg_status_txt = "📲 تليجرام متصل" if (tg_token and tg_chat_id) else
 st.markdown(f"""
 <div class="hero-banner">
     <div>
-        <div class="hero-title">🦅 <span class="hero-accent">EGX WHALE HUNTER</span> PRO <span style="font-size:13px;color:#FACC15;">V7.2</span></div>
+        <div class="hero-title">🦅 <span class="hero-accent">EGX WHALE HUNTER</span> PRO <span style="font-size:13px;color:#FACC15;">V7.3</span></div>
         <div class="hero-sub">🌐 {len(all_egx_dynamic)} سهم ديناميكي • 💼 محفظتي ({len(portfolio_clean_syms)}) • {tg_status_txt} • 🪐 جان والكواكب</div>
     </div>
     <div class="session-pill">{session_badge}</div>
@@ -1225,12 +1235,29 @@ for ticker, df_stock in market_data_map.items():
         if avg_t >= (min_turnover_m * 1_000_000) and len(df_stock) >= 205 and res["التغير %"] < 19.5:
             scanner_results.append(res)
 
-# جلب الأسعار البديلة من TradingView لأي سهم في المحفظة لم يتوفر على Yahoo Finance (مثل BONY)
-missing_port_syms = tuple(sorted([s for s in portfolio_clean_syms if s not in all_analyzed_map]))
-tv_fallback_map = fetch_tv_fallback_quotes(missing_port_syms) if missing_port_syms else {}
+# سحب الأسعار اللحظية من TradingView لجميع أسهم المحفظة + أفضل 40 سهم في الرادار (تتجدد كل 60 ثانية)
+top_radar_syms = [r["الرمز"] for r in sorted(scanner_results, key=lambda x: x["السكور"], reverse=True)[:40]]
+live_query_syms = tuple(sorted(list(set(portfolio_clean_syms + top_radar_syms))))
+tv_live_map, last_live_sync = fetch_tv_live_quotes(live_query_syms)
 
+# دمج السعر اللحظي من TradingView فوق بيانات Yahoo Finance المتأخرة أثناء الجلسة
+for sym, tv_q in tv_live_map.items():
+    if tv_q.get("close", 0) > 0 and sym in all_analyzed_map:
+        live_c = round(tv_q["close"], 2)
+        all_analyzed_map[sym]["الإغلاق"] = live_c
+        all_analyzed_map[sym]["التغير %"] = round(tv_q["change"], 2)
+        atr_u = all_analyzed_map[sym]["ATR14"]
+        sl_u = round(max(0.01, live_c - (2.0 * atr_u)), 2)
+        r_u = max(0.01, live_c - sl_u)
+        all_analyzed_map[sym]["الوقف (2xATR)"] = sl_u
+        all_analyzed_map[sym]["TP1"] = round(live_c + (1.618 * r_u), 2)
+        all_analyzed_map[sym]["TP2"] = round(live_c + (2.618 * r_u), 2)
+        all_analyzed_map[sym]["TP3"] = round(live_c + (3.618 * r_u), 2)
+
+# إضافة أي سهم في المحفظة غير متوفر على Yahoo Finance (مثل BONY)
+missing_port_syms = [s for s in portfolio_clean_syms if s not in all_analyzed_map]
 for m_sym in missing_port_syms:
-    tv_q = tv_fallback_map.get(m_sym)
+    tv_q = tv_live_map.get(m_sym)
     p_entry_item = next((x for x in my_portfolio if x["symbol"].upper().replace(".CA", "").strip() == m_sym), {})
     fallback_buy = float(p_entry_item.get("buy_price", 0.0))
 
@@ -1283,7 +1310,7 @@ total_port_cost = 0.0
 total_port_val = 0.0
 
 sent_tg_log = load_sent_tg_log()
-today_str = datetime.now().strftime("%Y-%m-%d")
+today_str = get_cairo_now().strftime("%Y-%m-%d")
 log_changed = False
 
 for item in my_portfolio:
@@ -1353,7 +1380,7 @@ for item in my_portfolio:
         if dedup_key not in sent_tg_log:
             ok, _ = send_telegram_message(tg_token, tg_chat_id, tg_msg_body)
             if ok:
-                sent_tg_log[dedup_key] = datetime.now().strftime("%H:%M")
+                sent_tg_log[dedup_key] = get_cairo_now().strftime("%H:%M")
                 log_changed = True
 
     span = max(0.01, tp1 - sl)
@@ -1366,6 +1393,7 @@ for item in my_portfolio:
         "الكمية": shares,
         "متوسط الشراء": round(buy_p, 2),
         "السعر الحالي": curr_p,
+        "تغير اليوم %": stock_info["التغير %"] if stock_info else 0.0,
         "صافي الربح/الخسارة": round(net_pnl, 0),
         "العائد %": round(net_pnl_pct, 2),
         "وقف الخسارة": sl,
@@ -1391,7 +1419,7 @@ if tg_auto_whales and tg_token and tg_chat_id:
                 )
                 ok, _ = send_telegram_message(tg_token, tg_chat_id, w_msg)
                 if ok:
-                    sent_tg_log[w_key] = datetime.now().strftime("%H:%M")
+                    sent_tg_log[w_key] = get_cairo_now().strftime("%H:%M")
                     log_changed = True
 
 if log_changed:
@@ -1400,6 +1428,17 @@ if log_changed:
 if active_alerts:
     for level, msg in active_alerts:
         st.markdown(f'<div class="alert-box-{level}">{msg}</div>', unsafe_allow_html=True)
+
+# ==========================================
+# شريط التحديث اللحظي السريع (متاح على الهاتف مباشرة)
+# ==========================================
+ref_c1, ref_c2 = st.columns([2, 1])
+with ref_c1:
+    st.caption(f"📡 مصدر الأسعار اللحظية: **TradingView مباشر** | آخر تحديث: **{last_live_sync}** بتوقيت القاهرة (يتحدث تلقائياً كل 60 ثانية)")
+with ref_c2:
+    if st.button("🔄 تحديث الأسعار اللحظية الآن", use_container_width=True):
+        fetch_tv_live_quotes.clear()
+        st.rerun()
 
 # ==========================================
 # زر التنقل الرئيسي البارز
@@ -1501,7 +1540,7 @@ if "محفظتي" in main_view:
         st.markdown(f"#### 📋 جدول متابعة أسهم المحفظة ({len(portfolio_rows)} أسهم)")
         p_cols = [
             "الرمز", "حالة التنبيه", "السكور الفني", "الكمية", "متوسط الشراء",
-            "السعر الحالي", "صافي الربح/الخسارة", "العائد %",
+            "السعر الحالي", "تغير اليوم %", "صافي الربح/الخسارة", "العائد %",
             "وقف الخسارة", "بُعد الوقف %", "TP1", "بُعد TP1 %", "TP2", "TradingView"
         ]
         st.dataframe(
@@ -1575,7 +1614,7 @@ if "محفظتي" in main_view:
                 <hr style="border-color:#26334D;">
                 <p class="txt-white"><b>الكمية:</b> {p_item['الكمية']:,} سهم</p>
                 <p class="txt-white"><b>متوسط الشراء:</b> {p_item['متوسط الشراء']} ج.م</p>
-                <p class="txt-white"><b>السعر الحالي:</b> {p_item['السعر الحالي']} ج.م</p>
+                <p class="txt-white"><b>السعر الحالي:</b> {p_item['السعر الحالي']} ج.م ({p_item['تغير اليوم %']:+.2f}% اليوم)</p>
                 <p class="txt-white"><b>صافي الربح/الخسارة:</b> <span class="{item_pnl_cls}" style="font-weight:bold;">{p_item['صافي الربح/الخسارة']:+,.0f} ج.م ({p_item['العائد %']:+.2f}%)</span></p>
                 <hr style="border-color:#26334D;">
                 <p class="txt-white"><b>وقف الخسارة:</b> <span class="txt-red">{p_item['وقف الخسارة']}</span> (يبعد {p_item['بُعد الوقف %']}%)</p>
@@ -1873,7 +1912,7 @@ if combined_symbols:
                 current_price=curr_p, use_trading_days=use_trading
             )
 
-            today_dt = datetime.now()
+            today_dt = get_cairo_now().replace(tzinfo=None)
             today_planets = get_planetary_longitudes(today_dt)
             planet_rows = []
             for p_name, deg_val in today_planets.items():
