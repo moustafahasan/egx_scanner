@@ -2,6 +2,7 @@ import os
 import re
 import math
 import json
+import time
 from zoneinfo import ZoneInfo
 
 # ==========================================
@@ -35,7 +36,7 @@ from datetime import datetime, timezone, timedelta, date
 # إعدادات الصفحة والتصميم البصري عالي التباين
 # ==========================================
 st.set_page_config(
-    page_title="EGX Whale Hunter Pro V7.4",
+    page_title="EGX Whale Hunter Pro V7.7",
     page_icon="🦅",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -241,13 +242,39 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# التوقيت المحلي للقاهرة
+# التوقيت المحلي للقاهرة وحساب تقدم الجلسة
 # ==========================================
 def get_cairo_now() -> datetime:
     try:
         return datetime.now(ZoneInfo("Africa/Cairo"))
     except Exception:
         return datetime.now(timezone(timedelta(hours=2)))
+
+def get_egx_session_metrics() -> dict:
+    """حساب حالة الجلسة ونسبة الوقت المنقضي لتطبيع السيولة اللحظية بدقة"""
+    now_cairo = get_cairo_now()
+    weekday = now_cairo.weekday()
+    is_trading_day = weekday in [6, 0, 1, 2, 3]
+    current_minutes = now_cairo.hour * 60 + now_cairo.minute
+    start_m = 10 * 60        # 10:00 AM
+    end_m = 14 * 60 + 30     # 02:30 PM (270 دقيقة)
+
+    if is_trading_day and (start_m <= current_minutes <= end_m):
+        elapsed = current_minutes - start_m
+        effective_elapsed = max(12.0, float(elapsed))
+        progress = min(1.0, effective_elapsed / 270.0)
+        return {
+            "is_open": True,
+            "elapsed_mins": elapsed,
+            "progress": progress,
+            "badge": f"🟢 الجلسة مفتوحة ({now_cairo.strftime('%H:%M')} • مضى {elapsed} د من 270)"
+        }
+    return {
+        "is_open": False,
+        "elapsed_mins": 270,
+        "progress": 1.0,
+        "badge": f"🌙 الجلسة مغلقة ({now_cairo.strftime('%H:%M')} القاهرة)"
+    }
 
 def _safe_f(arr, idx: int, default: float = 0.0) -> float:
     if len(arr) > idx and arr[idx] is not None:
@@ -259,9 +286,325 @@ def _safe_f(arr, idx: int, default: float = 0.0) -> float:
     return default
 
 # ==========================================
-# محرك تحليل التدفق اللحظي ورأي الصعود والهبوط
+# محرك موجات إليوت (ZigZag + قواعد إليوت + أهداف فيبوناتشي)
 # ==========================================
-def analyze_intraday_flow(tv_q: dict, fallback_close: float = 0.0) -> dict:
+def detect_zigzag_pivots(df: pd.DataFrame, pct_thresh: float = 0.05) -> list:
+    if df is None or len(df) < 15:
+        return []
+
+    highs = df["High"].values
+    lows = df["Low"].values
+    dates = df.index
+
+    pivots = []
+    trend = 0
+    last_idx = 0
+    last_price = float(lows[0])
+
+    init_high = float(highs[0])
+    init_low = float(lows[0])
+    init_h_idx = 0
+    init_l_idx = 0
+
+    start_i = 1
+    for i in range(1, len(df)):
+        h = float(highs[i])
+        l = float(lows[i])
+        if h > init_high:
+            init_high = h
+            init_h_idx = i
+        if l < init_low:
+            init_low = l
+            init_l_idx = i
+
+        if init_high >= init_low * (1.0 + pct_thresh):
+            if init_h_idx > init_l_idx:
+                pivots.append({"idx": init_l_idx, "date": dates[init_l_idx], "price": init_low, "type": "L"})
+                trend = 1
+                last_idx = init_h_idx
+                last_price = init_high
+            else:
+                pivots.append({"idx": init_h_idx, "date": dates[init_h_idx], "price": init_high, "type": "H"})
+                trend = -1
+                last_idx = init_l_idx
+                last_price = init_low
+            start_i = i + 1
+            break
+
+    if trend == 0:
+        return []
+
+    for i in range(start_i, len(df)):
+        h = float(highs[i])
+        l = float(lows[i])
+        if trend == 1:
+            if h >= last_price:
+                last_price = h
+                last_idx = i
+            elif l <= last_price * (1.0 - pct_thresh):
+                pivots.append({"idx": last_idx, "date": dates[last_idx], "price": last_price, "type": "H"})
+                trend = -1
+                last_price = l
+                last_idx = i
+        else:
+            if l <= last_price:
+                last_price = l
+                last_idx = i
+            elif h >= last_price * (1.0 + pct_thresh):
+                pivots.append({"idx": last_idx, "date": dates[last_idx], "price": last_price, "type": "L"})
+                trend = 1
+                last_price = h
+                last_idx = i
+
+    pivots.append({
+        "idx": last_idx,
+        "date": dates[last_idx],
+        "price": last_price,
+        "type": "H" if trend == 1 else "L",
+        "active": True
+    })
+    return pivots
+
+
+def analyze_elliott_waves(df: pd.DataFrame, pct_thresh: float = 0.05) -> dict:
+    pivots = detect_zigzag_pivots(df, pct_thresh=pct_thresh)
+    curr_close = float(df["Close"].iloc[-1])
+
+    if len(pivots) < 4:
+        return {
+            "status": "insufficient",
+            "wave_name": "⚪ بيانات غير كافية للترقيم",
+            "pattern_type": "غير محدد",
+            "badge_cls": "badge-warn",
+            "invalidation": round(curr_close * 0.9, 2),
+            "target_1": round(curr_close * 1.1, 2),
+            "target_2": round(curr_close * 1.2, 2),
+            "summary": "جرب تقليل نسبة حساسية الموجات (مثلاً 3%) لإظهار الموجات الفرعية.",
+            "rules_check": [],
+            "labeled_pivots": []
+        }
+
+    if len(pivots) >= 5 and pivots[-5]["type"] == "L":
+        p0, p1, p2, p3, p4 = pivots[-5], pivots[-4], pivots[-3], pivots[-2], pivots[-1]
+        w1 = p1["price"] - p0["price"]
+        w3 = p3["price"] - p2["price"]
+        rule1 = p2["price"] > p0["price"]
+        rule2 = (p3["price"] > p1["price"]) and (w3 >= w1 * 0.85)
+        rule3 = p4["price"] > p1["price"]
+
+        if w1 > 0 and rule1 and rule2 and rule3:
+            t1 = round(p4["price"] + w1, 2)
+            t2 = round(p4["price"] + 0.618 * (p3["price"] - p0["price"]), 2)
+            inv = round(p1["price"], 2)
+            if curr_close > p4["price"] * 1.015:
+                w_name = "🌊 الموجة الخامسة الصاعدة (Wave 5)"
+                summary = f"أنهى السهم تصحيح الموجة الرابعة عند ({p4['price']:.2f}) وبدأ الانطلاق في الموجة الخامسة الأخيرة نحو ({t1}) ثم ({t2})."
+                b_cls = "badge-bull"
+            else:
+                w_name = "⏳ الموجة الرابعة التصحيحية (Wave 4)"
+                summary = f"السهم في استراحة جني أرباح ضمن الموجة الرابعة؛ الثبات أعلى قمة الأولى ({inv}) يبقي سيناريو الموجة الخامسة الصاعدة قائماً."
+                b_cls = "badge-warn"
+
+            labels = ["(0)", "(1)", "(2)", "(3)", "(4)"]
+            labeled = [dict(p, label=lbl) for p, lbl in zip([p0, p1, p2, p3, p4], labels)]
+            return {
+                "status": "ok",
+                "wave_name": w_name,
+                "pattern_type": "موجة دافعة صاعدة (Bullish Impulse 1-5)",
+                "badge_cls": b_cls,
+                "invalidation": inv,
+                "target_1": t1,
+                "target_2": max(t1, t2),
+                "summary": summary,
+                "rules_check": [
+                    ("1. الموجة (2) لم تكسر بداية (1)", f"{p2['price']:.2f} > {p0['price']:.2f}", True),
+                    ("2. الموجة (3) ممتدة وليست الأقصر", f"طول (3) = {w3:.2f} مقابل (1) = {w1:.2f}", True),
+                    ("3. الموجة (4) لم تتداخل مع قمة (1)", f"{p4['price']:.2f} > {p1['price']:.2f}", True),
+                ],
+                "labeled_pivots": labeled
+            }
+
+    if len(pivots) >= 6 and pivots[-6]["type"] == "L":
+        p0, p1, p2, p3, p4, p5 = pivots[-6], pivots[-5], pivots[-4], pivots[-3], pivots[-2], pivots[-1]
+        w1 = p1["price"] - p0["price"]
+        w3 = p3["price"] - p2["price"]
+        w5 = p5["price"] - p4["price"]
+        if w1 > 0 and p2["price"] > p0["price"] and p3["price"] > p1["price"] and p4["price"] > p1["price"] and p5["price"] > p3["price"]:
+            if curr_close < p5["price"] * 0.985:
+                t1 = round(p5["price"] - 0.382 * (p5["price"] - p0["price"]), 2)
+                t2 = round(p4["price"], 2)
+                inv = round(p5["price"], 2)
+                labels = ["(0)", "(1)", "(2)", "(3)", "(4)", "(5) / بداية A"]
+                labeled = [dict(p, label=lbl) for p, lbl in zip([p0, p1, p2, p3, p4, p5], labels)]
+                return {
+                    "status": "ok",
+                    "wave_name": "🔻 بداية الموجة التصحيحية (Wave A)",
+                    "pattern_type": "اكتمال 5 موجات صاعدة → تصحيح (A-B-C)",
+                    "badge_cls": "badge-bear",
+                    "invalidation": inv,
+                    "target_1": t1,
+                    "target_2": t2,
+                    "summary": f"أكمل السهم 5 موجات دافعة صاعدة عند القمة ({p5['price']:.2f}) وبدأ موجة جني أرباح تصحيحية (A) تستهدف مناطق ({t1}) ثم قاع الرابعة ({t2}).",
+                    "rules_check": [
+                        ("1. الموجة (2) فوق بداية (1)", f"{p2['price']:.2f} > {p0['price']:.2f}", True),
+                        ("2. الموجة (3) ليست الأقصر", f"طول (3)={w3:.2f} | (1)={w1:.2f} | (5)={w5:.2f}", w3 >= min(w1, w5)),
+                        ("3. عدم تداخل (4) مع (1)", f"{p4['price']:.2f} > {p1['price']:.2f}", True),
+                    ],
+                    "labeled_pivots": labeled
+                }
+            else:
+                t1 = round(p4["price"] + w1, 2)
+                t2 = round(p4["price"] + 1.618 * w1, 2)
+                inv = round(p4["price"], 2)
+                labels = ["(0)", "(1)", "(2)", "(3)", "(4)", "(5) نشطة"]
+                labeled = [dict(p, label=lbl) for p, lbl in zip([p0, p1, p2, p3, p4, p5], labels)]
+                return {
+                    "status": "ok",
+                    "wave_name": "🚀 الموجة الخامسة الدافعة (Wave 5 نشطة)",
+                    "pattern_type": "موجة دافعة صاعدة (Bullish Impulse 1-5)",
+                    "badge_cls": "badge-bull",
+                    "invalidation": inv,
+                    "target_1": max(t1, round(p5["price"] * 1.03, 2)),
+                    "target_2": max(t2, round(p5["price"] * 1.08, 2)),
+                    "summary": f"السهم يتداول في قمة الموجة الخامسة الصاعدة؛ يُنصح برفع وقف حماية الأرباح أسفل قاع الرابعة ({inv}).",
+                    "rules_check": [
+                        ("1. الموجة (2) فوق بداية (1)", f"{p2['price']:.2f} > {p0['price']:.2f}", True),
+                        ("2. الموجة (3) ليست الأقصر", f"طول (3)={w3:.2f} | (1)={w1:.2f} | (5)={w5:.2f}", w3 >= min(w1, w5)),
+                        ("3. عدم تداخل (4) مع (1)", f"{p4['price']:.2f} > {p1['price']:.2f}", True),
+                    ],
+                    "labeled_pivots": labeled
+                }
+
+    if len(pivots) >= 4 and pivots[-4]["type"] == "L":
+        p0, p1, p2, p3 = pivots[-4], pivots[-3], pivots[-2], pivots[-1]
+        w1 = p1["price"] - p0["price"]
+        w3 = p3["price"] - p2["price"]
+        if w1 > 0 and p2["price"] > p0["price"] and p3["price"] > p1["price"]:
+            t1 = round(p2["price"] + 1.618 * w1, 2)
+            t2 = round(p2["price"] + 2.618 * w1, 2)
+            inv = round(p2["price"], 2)
+            if curr_close >= p3["price"] * 0.985:
+                w_name = "🔥 الموجة الثالثة الدافعة (Wave 3)"
+                summary = f"السهم في قلب الموجة الثالثة الصاعدة (أقوى موجات إليوت) بعد اختراق قمة الأولى ({p1['price']:.2f})، بأهداف فيبوناتشي عند ({t1}) ثم ({t2})."
+                b_cls = "badge-bull"
+            else:
+                w_name = "⏳ بداية الموجة الرابعة التصحيحية (Wave 4)"
+                t1 = round(p3["price"] - 0.382 * w3, 2)
+                t2 = round(p1["price"] + 0.01, 2)
+                inv = round(p1["price"], 2)
+                summary = f"بعد صعود قوي في الموجة الثالثة حتى ({p3['price']:.2f})، يهدئ السهم في الموجة الرابعة نحو ({t1}) بشرط عدم كسر ({inv})."
+                b_cls = "badge-warn"
+
+            labels = ["(0)", "(1)", "(2)", "(3)"]
+            labeled = [dict(p, label=lbl) for p, lbl in zip([p0, p1, p2, p3], labels)]
+            return {
+                "status": "ok",
+                "wave_name": w_name,
+                "pattern_type": "موجة دافعة صاعدة قيد التكوين (Waves 1-2-3)",
+                "badge_cls": b_cls,
+                "invalidation": inv,
+                "target_1": t1,
+                "target_2": t2,
+                "summary": summary,
+                "rules_check": [
+                    ("1. الموجة (2) لم تكسر بداية (1)", f"{p2['price']:.2f} > {p0['price']:.2f}", True),
+                    ("2. الموجة (3) اخترقت قمة (1)", f"{p3['price']:.2f} > {p1['price']:.2f}", True),
+                    ("3. نسبة امتداد (3) إلى (1)", f"{(w3/w1)*100:.0f}%", w3 >= w1),
+                ],
+                "labeled_pivots": labeled
+            }
+
+    if len(pivots) >= 4 and pivots[-4]["type"] == "H":
+        p0, p1, p2, p3 = pivots[-4], pivots[-3], pivots[-2], pivots[-1]
+        wa = p0["price"] - p1["price"]
+        wc = p2["price"] - p3["price"]
+        if wa > 0 and p2["price"] < p0["price"] and p3["price"] < p1["price"]:
+            if curr_close > p3["price"] * 1.02:
+                t1 = round(p2["price"], 2)
+                t2 = round(p0["price"], 2)
+                inv = round(p3["price"], 2)
+                w_name = "🌱 بداية موجة صاعدة جديدة (Wave 1 بعد اكتمال C)"
+                summary = f"أنهى السهم التصحيح الثلاثي (A-B-C) عند القاع ({p3['price']:.2f}) وبدأ دورة صعود جديدة؛ الإلغاء بكسر ({inv})."
+                b_cls = "badge-bull"
+            else:
+                t1 = round(p2["price"] - wa, 2)
+                t2 = round(p2["price"] - 1.272 * wa, 2)
+                inv = round(p2["price"], 2)
+                w_name = "📉 الموجة التصحيحية الهابطة (Wave C)"
+                summary = f"السهم يتحرك داخل الموجة (C) الهابطة بعد فشل تجاوز قمة (B) عند ({inv})، وتقع مناطق اكتمال التصحيح قرب ({max(0.01, t1)})."
+                b_cls = "badge-bear"
+
+            labels = ["(0)", "(A)", "(B)", "(C)"]
+            labeled = [dict(p, label=lbl) for p, lbl in zip([p0, p1, p2, p3], labels)]
+            return {
+                "status": "ok",
+                "wave_name": w_name,
+                "pattern_type": "نموذج تصحيحي متعرج (ZigZag A-B-C)",
+                "badge_cls": b_cls,
+                "invalidation": inv,
+                "target_1": max(0.01, t1),
+                "target_2": max(0.01, t2),
+                "summary": summary,
+                "rules_check": [
+                    ("1. قمة الموجة (B) أدنى من بداية (A)", f"{p2['price']:.2f} < {p0['price']:.2f}", True),
+                    ("2. الموجة (C) كسرت قاع (A)", f"{p3['price']:.2f} < {p1['price']:.2f}", True),
+                    ("3. نسبة طول (C) إلى (A)", f"{(wc/wa)*100:.0f}%", True),
+                ],
+                "labeled_pivots": labeled
+            }
+
+    p0, p1, p2 = pivots[-3], pivots[-2], pivots[-1]
+    if p0["type"] == "L" and p1["type"] == "H" and p2["type"] == "L" and p2["price"] > p0["price"]:
+        w1 = p1["price"] - p0["price"]
+        ret_pct = ((p1["price"] - p2["price"]) / w1) * 100.0
+        t1 = round(p2["price"] + 1.618 * w1, 2)
+        t2 = round(p2["price"] + 2.618 * w1, 2)
+        inv = round(p0["price"], 2)
+        labels = ["(0)", "(1)", "(2)"]
+        labeled = [dict(p, label=lbl) for p, lbl in zip([p0, p1, p2], labels)]
+        return {
+            "status": "ok",
+            "wave_name": "🎯 الموجة الثانية التصحيحية (Wave 2 — منطقة تجميع)",
+            "pattern_type": "بداية دورة دافعة (Waves 1-2)",
+            "badge_cls": "badge-bull" if curr_close > p2["price"] * 1.01 else "badge-warn",
+            "invalidation": inv,
+            "target_1": t1,
+            "target_2": t2,
+            "summary": f"صحح السهم {ret_pct:.1f}% من الموجة الأولى عند ({p2['price']:.2f})؛ اختراق ({p1['price']:.2f}) يؤكد انطلاق الموجة الثالثة نحو ({t1}).",
+            "rules_check": [
+                ("1. الموجة (2) فوق قاع (0)", f"{p2['price']:.2f} > {p0['price']:.2f}", True),
+                ("2. نسبة تصحيح فيبوناتشي", f"{ret_pct:.1f}% (المثالي 50% - 61.8%)", 30.0 <= ret_pct <= 78.6),
+                ("3. مستوى تأكيد الموجة (3)", f"اختراق {p1['price']:.2f}", curr_close >= p1["price"]),
+            ],
+            "labeled_pivots": labeled
+        }
+
+    last_4 = pivots[-4:]
+    labels = ["(W1)", "(W2)", "(W3)", "(W4)"]
+    labeled = [dict(p, label=lbl) for p, lbl in zip(last_4, labels)]
+    is_up = last_4[-1]["price"] > last_4[-2]["price"]
+    return {
+        "status": "ok",
+        "wave_name": "🔄 موجة تجميع عرضية (Complex Correction)",
+        "pattern_type": "نموذج تصحيحي مركب (W-X-Y)",
+        "badge_cls": "badge-warn",
+        "invalidation": round(min(p["price"] for p in last_4), 2),
+        "target_1": round(max(p["price"] for p in last_4), 2),
+        "target_2": round(max(p["price"] for p in last_4) * 1.08, 2),
+        "summary": "يتحرك السهم في موجة تصحيحية عرضية متداخلة؛ يُفضّل انتظار اختراق قمة الموجة (X) لتأكيد الاتجاه الجديد.",
+        "rules_check": [
+            ("1. الاتجاه اللحظي للضلع الأخير", "صاعد 🟢" if is_up else "هابط 🔴", is_up),
+            ("2. سقف النطاق العرضي", f"{max(p['price'] for p in last_4):.2f}", True),
+            ("3. قاع النطاق العرضي", f"{min(p['price'] for p in last_4):.2f}", True),
+        ],
+        "labeled_pivots": labeled
+    }
+
+
+# ==========================================
+# محرك تحليل التدفق اللحظي (معدّل بوتيرة الوقت الفعلي للجلسة)
+# ==========================================
+def analyze_intraday_flow(tv_q: dict, fallback_close: float = 0.0, session_progress: float = 1.0) -> dict:
     close_p = tv_q.get("close", 0.0) if tv_q else fallback_close
     if close_p <= 0:
         return {
@@ -284,7 +627,6 @@ def analyze_intraday_flow(tv_q: dict, fallback_close: float = 0.0) -> dict:
             "action_hint": "انتظر افتتاح الجلسة لتقييم السيولة اللحظية."
         }
 
-    open_p = tv_q.get("open", close_p) or close_p
     high_p = tv_q.get("high", close_p) or close_p
     low_p = tv_q.get("low", close_p) or close_p
     daily_chg = tv_q.get("change", 0.0)
@@ -306,12 +648,14 @@ def analyze_intraday_flow(tv_q: dict, fallback_close: float = 0.0) -> dict:
 
     vwap_diff_pct = ((close_p - vwap) / vwap * 100.0) if vwap > 0 else 0.0
     clv = ((close_p - low_p) / (high_p - low_p)) if (high_p > low_p) else 0.5
-    rel_vol = (vol / avg_vol10) if (avg_vol10 > 0 and vol > 0) else 1.0
+
+    # تطبيع السيولة اللحظية حسب الوقت المنقضي من الجلسة
+    expected_vol_now = max(1.0, avg_vol10 * max(0.04, session_progress)) if avg_vol10 > 0 else 0.0
+    pace_rvol = (vol / expected_vol_now) if (expected_vol_now > 0 and vol > 0) else 0.0
 
     score = 0
     reasons = []
 
-    # 1. موقع السعر مقارنة بـ VWAP (أهم معيار مؤسسي لحظي)
     if close_p > vwap * 1.003:
         score += 30
         reasons.append(f"✅ السعر ({close_p}) يتداول أعلى متوسط السيولة VWAP ({vwap:.2f}) بفارق {vwap_diff_pct:+.2f}% (سيطرة مشترين).")
@@ -321,7 +665,6 @@ def analyze_intraday_flow(tv_q: dict, fallback_close: float = 0.0) -> dict:
     else:
         reasons.append(f"⚖️ السعر ({close_p}) ملاصق لخط VWAP ({vwap:.2f}) في منطقة توازن.")
 
-    # 2. موقع السعر داخل مدى الجلسة (CLV)
     if clv >= 0.70:
         score += 25
         reasons.append(f"📈 السهم يتماسك في الثلث العلوي لمدى الجلسة ({clv*100:.0f}% من القاع للقمة).")
@@ -329,7 +672,6 @@ def analyze_intraday_flow(tv_q: dict, fallback_close: float = 0.0) -> dict:
         score -= 25
         reasons.append(f"📉 السهم يضغط قرب قاع الجلسة ({clv*100:.0f}% من مدى اليوم).")
 
-    # 3. تحليل أفضل طلب وأفضل عرض (Bid / Ask)
     spread_pct = 0.0
     if bid > 0 and ask > 0 and ask >= bid:
         spread_pct = ((ask - bid) / close_p) * 100.0
@@ -348,14 +690,13 @@ def analyze_intraday_flow(tv_q: dict, fallback_close: float = 0.0) -> dict:
     else:
         if clv >= 0.65 and daily_chg > 0:
             score += 10
-            ba_pressure = "🟢 إغلاق/تداول قرب القمة"
+            ba_pressure = "🟢 تداول قرب قمة الجلسة"
         elif clv <= 0.35 and daily_chg < 0:
             score -= 10
-            ba_pressure = "🔴 إغلاق/تداول قرب القاع"
+            ba_pressure = "🔴 تداول قرب قاع الجلسة"
         else:
             ba_pressure = "⚪ لا توجد عروض حية حالياً"
 
-    # 4. زخم الفريم اللحظي 15 دقيقة (RSI 15m + MACD 15m)
     if rsi15 >= 56:
         score += 15
         reasons.append(f"🔥 زخم 15 دقيقة إيجابي (RSI 15m = {rsi15:.1f}).")
@@ -368,12 +709,11 @@ def analyze_intraday_flow(tv_q: dict, fallback_close: float = 0.0) -> dict:
     elif macd15 < macds15:
         score -= 15
 
-    # 5. معامل تأكيد السيولة اللحظية
-    if rel_vol >= 1.35:
-        score = int(max(-100, min(100, round(score * 1.15))))
-        reasons.append(f"💧 سيولة الجلسة مرتفعة ({rel_vol:.1f}x من متوسط 10 أيام) وتؤكد الاتجاه الحالي.")
-    elif rel_vol < 0.60:
-        reasons.append(f"💤 سيولة الجلسة ضعيفة ({rel_vol:.1f}x) — الحذر من الاختراقات الكاذبة.")
+    if pace_rvol >= 1.40:
+        score = int(max(-100, min(100, round(score * 1.2))))
+        reasons.append(f"💧 وتيرة السيولة اللحظية متسارعة ({pace_rvol:.1f}x من المعتاد في نفس هذا التوقيت).")
+    elif 0 < pace_rvol < 0.55:
+        reasons.append(f"💤 وتيرة السيولة هادئة حالياً ({pace_rvol:.1f}x من المعتاد في نفس التوقيت).")
 
     score = max(-100, min(100, score))
 
@@ -408,7 +748,7 @@ def analyze_intraday_flow(tv_q: dict, fallback_close: float = 0.0) -> dict:
         "macd15": round(macd15, 4),
         "macds15": round(macds15, 4),
         "clv_pct": round(clv * 100, 1),
-        "rel_vol": round(rel_vol, 2),
+        "rel_vol": round(pace_rvol, 2),
         "reasons": reasons,
         "action_hint": action_hint
     }
@@ -484,7 +824,7 @@ def detect_telegram_chat_id(bot_token: str) -> tuple:
                 msg = upd.get("message") or upd.get("channel_post") or {}
                 chat = msg.get("chat", {})
                 if chat.get("id"):
-                    return str(chat["id"]), "تم العور على Chat ID بنجاح!"
+                    return str(chat["id"]), "تم العثور على Chat ID بنجاح!"
             return None, "لم تصل رسائل للبوت بعد. افتح البوت في تليجرام واضغط Start ثم حاول مرة أخرى."
     except Exception as e:
         return None, f"تعذر الاتصال بتليجرام: {e}"
@@ -518,178 +858,277 @@ def save_portfolio(portfolio_list: list):
         pass
 
 # ==========================================
-# دالة تحديد حالة جلسة البورصة المصرية بتوقيت القاهرة
+# محرك المسح الشامل المباشر لجميع أسهم البورصة (مع كسر الكاش)
 # ==========================================
-def get_egx_session_status() -> str:
-    now_cairo = get_cairo_now()
-    weekday = now_cairo.weekday()
-    is_trading_day = weekday in [6, 0, 1, 2, 3]
-    current_minutes = now_cairo.hour * 60 + now_cairo.minute
-    if is_trading_day and (10 * 60 <= current_minutes <= 14 * 60 + 30):
-        return f"🟢 الجلسة مفتوحة الآن ({now_cairo.strftime('%H:%M')} القاهرة)"
-    return f"🌙 الجلسة مغلقة ({now_cairo.strftime('%H:%M')} القاهرة)"
+LEADERS_EGX_SYMBOLS = {
+    "COMI", "TMGH", "SWDY", "ETEL", "EFIH", "FWRY", "HRHO", "ABUK", "ORAS",
+    "EAST", "ESRS", "EKHO", "HELI", "PHDC", "ORWE", "CLHO", "ISPH", "JUFO",
+    "OBRI", "DSCW", "ECAP", "ATLC", "AMOC", "SKPC", "MFPC", "ADIB", "CIEB",
+    "FAIT", "EMFD", "OCDI", "EGAL", "GBCO", "MCQE", "ARCC", "CIRA", "RMDA",
+    "ZMID", "ELSH", "MTIE", "RAYA", "BTFH", "ASPI", "TAQA", "VLMR", "PHAR",
+    "ALCN", "CSAG", "EGTS", "MASR", "EFID", "ORHD", "BINV", "CCAP", "HDBK",
+    "BONY", "QNBA", "VALU", "ACTF"
+}
 
-# ==========================================
-# محرك جلب كل أسهم البورصة المصرية ديناميكياً + التدفق اللحظي TradingView
-# ==========================================
-LEADERS_EGX_TICKERS = [
-    "COMI.CA", "TMGH.CA", "SWDY.CA", "ETEL.CA", "EFIH.CA", "FWRY.CA",
-    "HRHO.CA", "ABUK.CA", "ORAS.CA", "EAST.CA", "ESRS.CA", "EKHO.CA",
-    "HELI.CA", "PHDC.CA", "ORWE.CA", "CLHO.CA", "ISPH.CA", "JUFO.CA",
-    "OBRI.CA", "DSCW.CA", "ECAP.CA", "ATLC.CA", "AMOC.CA", "SKPC.CA",
-    "MFPC.CA", "ADIB.CA", "CIEB.CA", "FAIT.CA", "EMFD.CA", "OCDI.CA",
-    "EGAL.CA", "GBCO.CA", "MCQE.CA", "ARCC.CA", "CIRA.CA", "RMDA.CA",
-    "ZMID.CA", "ELSH.CA", "MTIE.CA", "RAYA.CA", "BTFH.CA", "ASPI.CA",
-    "TAQA.CA", "VLMR.CA", "PHAR.CA", "ALCN.CA", "CSAG.CA", "EGTS.CA",
-    "MASR.CA", "EFID.CA", "ORHD.CA", "BINV.CA", "CCAP.CA", "HDBK.CA",
-    "BONY.CA"
-]
+@st.cache_data(ttl=20, show_spinner=False)
+def fetch_full_egx_tv_scanner(cache_buster: int = 0) -> tuple:
+    stocks_dict = {}
+    fetched_time = get_cairo_now().strftime("%H:%M:%S")
+    url = f"https://scanner.tradingview.com/egypt/scan?t={int(time.time())}"
 
-FALLBACK_EGX_TICKERS = sorted(list(set(LEADERS_EGX_TICKERS + [
-    "ACAMD.CA", "ACAP.CA", "ACGC.CA", "ACRO.CA", "ACTF.CA", "ADCI.CA",
-    "ADPC.CA", "ADRI.CA", "AFDI.CA", "AFMC.CA", "AIFI.CA", "AIH.CA",
-    "AJWA.CA", "ALUM.CA", "AMER.CA", "AMIA.CA", "AMPI.CA", "ANFI.CA",
-    "APSW.CA", "ARAB.CA", "AREH.CA", "ARPI.CA", "ARVA.CA", "ASCM.CA",
-    "ATQA.CA", "AXPH.CA", "BCAP.CA", "BIGP.CA", "BIOC.CA", "BLOM.CA",
-    "BONY.CA", "CAED.CA", "CANA.CA", "CCRS.CA", "CEFM.CA", "CERA.CA",
-    "CFGH.CA", "CICH.CA", "CNFN.CA", "COPR.CA", "COSG.CA", "CRST.CA",
-    "DAPH.CA", "DCRC.CA", "DEVP.CA", "DICC.CA", "DOMT.CA", "DYST.CA",
-    "EALR.CA", "EBSC.CA", "EDBM.CA", "EEII.CA", "EFIC.CA", "EGAS.CA",
-    "EGBE.CA", "EGCH.CA", "EGSA.CA", "EHDR.CA", "EIUD.CA", "EKHOA.CA",
-    "ELKA.CA", "ELNA.CA", "ELWA.CA", "ENGC.CA", "EPCO.CA", "EPPK.CA",
-    "ESGI.CA", "ETRS.CA", "EXPA.CA", "FAITA.CA", "GADW.CA", "GDWA.CA",
-    "GGCC.CA", "GIHD.CA", "GMCI.CA", "GOCO.CA", "GRCA.CA", "GSSC.CA",
-    "GTWL.CA", "IBCT.CA", "ICFC.CA", "ICID.CA", "ICMI.CA", "IDRE.CA",
-    "IFAP.CA", "INFI.CA", "IRON.CA", "ISMQ.CA", "ITSY.CA", "KABO.CA",
-    "KWIN.CA", "KZPC.CA", "LCSW.CA", "MAAL.CA", "MBSC.CA", "MCRO.CA",
-    "MEPA.CA", "MENA.CA", "MFSC.CA", "MHOT.CA", "MICH.CA", "MILA.CA",
-    "MIPH.CA", "MKIT.CA", "MMAT.CA", "MOED.CA", "MOIL.CA", "MOIN.CA",
-    "MOSC.CA", "MPCI.CA", "MPCO.CA", "MRCO.CA", "NAHO.CA", "NAPR.CA",
-    "NCCW.CA", "NDRL.CA", "NHPS.CA", "NINH.CA", "NIPH.CA", "NOAF.CA",
-    "NRPD.CA", "OCPH.CA", "ODID.CA", "OFH.CA", "OIH.CA", "OLFI.CA",
-    "PACH.CA", "POUL.CA", "PRCL.CA", "PRDC.CA", "PRMH.CA", "PTCC.CA",
-    "QNBA.CA", "RAKT.CA", "REAC.CA", "RIVA.CA", "ROTO.CA", "RREI.CA",
-    "RTVC.CA", "RUBX.CA", "SAIB.CA", "SAUD.CA", "SCEM.CA", "SCFM.CA",
-    "SDTI.CA", "SEIG.CA", "SIPC.CA", "SMFR.CA", "SNFC.CA", "SPHT.CA",
-    "SPIN.CA", "SPMD.CA", "SUCE.CA", "SUGR.CA", "SVCE.CA", "TANM.CA",
-    "TRTO.CA", "UASG.CA", "UEFM.CA", "UEGC.CA", "UNBE.CA", "UNIP.CA",
-    "UNIT.CA", "UPMS.CA", "UTOP.CA", "VALU.CA", "VERT.CA", "VLMRA.CA",
-    "WCDF.CA", "WKOL.CA", "ZEOT.CA"
-])))
-
-@st.cache_data(ttl=43200, show_spinner=False)
-def fetch_dynamic_egx_universe() -> tuple:
-    dynamic_symbols = set()
-    names_map = {"BONY": "Bonyan for Development and Trade"}
-    source_status = "قاعدة احتياطية"
+    full_cols = [
+        "name", "description", "close", "change", "open", "high", "low",
+        "volume", "average_volume_10d_calc", "average_volume_30d_calc",
+        "ATR", "EMA20", "EMA50", "EMA200", "High.1M", "Perf.1M",
+        "RSI", "RSI|15", "MACD.macd|15", "MACD.signal|15", "VWAP", "bid", "ask"
+    ]
 
     try:
-        url = "https://scanner.tradingview.com/egypt/scan"
         payload = json.dumps({
             "filter": [{"left": "type", "operation": "in_range", "right": ["stock", "dr", "fund"]}],
             "options": {"lang": "en"},
             "markets": ["egypt"],
             "symbols": {"query": {"types": []}, "tickers": []},
-            "columns": ["name", "description"],
-            "sort": {"sortBy": "name", "sortOrder": "asc"},
+            "columns": full_cols,
+            "sort": {"sortBy": "volume", "sortOrder": "desc"},
             "range": [0, 500]
         }).encode("utf-8")
         req = urllib.request.Request(
             url,
             data=payload,
-            headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"}
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "Mozilla/5.0",
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache"
+            }
         )
-        with urllib.request.urlopen(req, timeout=8) as resp:
-            res_json = json.loads(resp.read().decode("utf-8"))
-            for row in res_json.get("data", []):
-                full_s = row.get("s", "")
-                if ":" in full_s:
-                    sym = full_s.split(":")[1].strip().upper()
-                    if re.match(r"^[A-Z0-9]{2,12}$", sym):
-                        ca_sym = f"{sym}.CA"
-                        dynamic_symbols.add(ca_sym)
-                        d_vals = row.get("d", [])
-                        if len(d_vals) > 1 and d_vals[1]:
-                            names_map[sym] = str(d_vals[1])
-        if len(dynamic_symbols) >= 150:
-            source_status = f"مباشر وديناميكي ({len(dynamic_symbols)} سهم من السوق)"
-    except Exception:
-        pass
-
-    if len(dynamic_symbols) < 150:
-        try:
-            req2 = urllib.request.Request(
-                "https://stockanalysis.com/list/egyptian-exchange/",
-                headers={"User-Agent": "Mozilla/5.0"}
-            )
-            with urllib.request.urlopen(req2, timeout=8) as resp2:
-                html_txt = resp2.read().decode("utf-8", errors="ignore")
-                found_syms = re.findall(r"/quote/egx/([A-Za-z0-9]+)/", html_txt)
-                for s in found_syms:
-                    sym = s.strip().upper()
-                    if re.match(r"^[A-Z0-9]{2,12}$", sym):
-                        dynamic_symbols.add(f"{sym}.CA")
-            if len(dynamic_symbols) >= 150:
-                source_status = f"مباشر وديناميكي ({len(dynamic_symbols)} سهم من السوق)"
-        except Exception:
-            pass
-
-    merged_list = sorted(list(dynamic_symbols.union(set(FALLBACK_EGX_TICKERS))))
-    return merged_list, names_map, source_status
-
-@st.cache_data(ttl=60, show_spinner=False)
-def fetch_tv_live_quotes(clean_symbols: tuple) -> tuple:
-    """جلب الأسعار اللحظية وبيانات التدفق (VWAP, Bid/Ask, RSI 15m, MACD 15m) من TradingView كل 60 ثانية"""
-    quotes = {}
-    fetched_time = get_cairo_now().strftime("%H:%M:%S")
-    if not clean_symbols:
-        return quotes, fetched_time
-    try:
-        url = "https://scanner.tradingview.com/egypt/scan"
-        payload = json.dumps({
-            "symbols": {
-                "tickers": [f"EGX:{s.upper().replace('.CA', '')}" for s in clean_symbols],
-                "query": {"types": []}
-            },
-            "columns": [
-                "name", "close", "change", "open", "high", "low",
-                "volume", "ATR", "VWAP", "bid", "ask",
-                "RSI|15", "MACD.macd|15", "MACD.signal|15", "average_volume_10d_calc"
-            ]
-        }).encode("utf-8")
-        req = urllib.request.Request(
-            url,
-            data=payload,
-            headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"}
-        )
-        with urllib.request.urlopen(req, timeout=8) as resp:
+        with urllib.request.urlopen(req, timeout=10) as resp:
             res_json = json.loads(resp.read().decode("utf-8"))
             for row in res_json.get("data", []):
                 full_s = row.get("s", "")
                 d = row.get("d", [])
-                if ":" in full_s and len(d) >= 2 and d[1] is not None:
-                    sym = full_s.split(":")[1].strip().upper()
-                    close_val = _safe_f(d, 1, 0.0)
-                    atr_raw = _safe_f(d, 7, 0.0)
-                    quotes[sym] = {
-                        "close": close_val,
-                        "change": _safe_f(d, 2, 0.0),
-                        "open": _safe_f(d, 3, close_val),
-                        "high": _safe_f(d, 4, close_val),
-                        "low": _safe_f(d, 5, close_val),
-                        "volume": _safe_f(d, 6, 0.0),
-                        "atr": atr_raw if atr_raw > 0 else (close_val * 0.025),
-                        "vwap": _safe_f(d, 8, 0.0),
-                        "bid": _safe_f(d, 9, 0.0),
-                        "ask": _safe_f(d, 10, 0.0),
-                        "rsi15": _safe_f(d, 11, 50.0),
-                        "macd15": _safe_f(d, 12, 0.0),
-                        "macds15": _safe_f(d, 13, 0.0),
-                        "avg_vol10": _safe_f(d, 14, 0.0),
-                    }
+                if ":" not in full_s or len(d) < 4:
+                    continue
+                sym = full_s.split(":")[1].strip().upper()
+                if not re.match(r"^[A-Z0-9]{2,12}$", sym):
+                    continue
+                close_val = _safe_f(d, 2, 0.0)
+                if close_val <= 0:
+                    continue
+                atr_raw = _safe_f(d, 10, 0.0)
+                ema20_v = _safe_f(d, 11, close_val)
+                ema50_v = _safe_f(d, 12, close_val)
+                ema200_v = _safe_f(d, 13, 0.0)
+                high1m_v = _safe_f(d, 14, close_val)
+
+                stocks_dict[sym] = {
+                    "symbol": sym,
+                    "name": str(d[1]) if len(d) > 1 and d[1] else sym,
+                    "close": close_val,
+                    "change": _safe_f(d, 3, 0.0),
+                    "open": _safe_f(d, 4, close_val),
+                    "high": _safe_f(d, 5, close_val),
+                    "low": _safe_f(d, 6, close_val),
+                    "volume": _safe_f(d, 7, 0.0),
+                    "avg_vol10": _safe_f(d, 8, 0.0),
+                    "avg_vol30": _safe_f(d, 9, 0.0),
+                    "atr": atr_raw if atr_raw > 0 else (close_val * 0.025),
+                    "ema20": ema20_v if ema20_v > 0 else close_val,
+                    "ema50": ema50_v if ema50_v > 0 else close_val,
+                    "ema200": ema200_v,
+                    "high_1m": high1m_v if high1m_v > 0 else close_val,
+                    "perf_1m": _safe_f(d, 15, 0.0),
+                    "rsi": _safe_f(d, 16, 50.0),
+                    "rsi15": _safe_f(d, 17, 50.0),
+                    "macd15": _safe_f(d, 18, 0.0),
+                    "macds15": _safe_f(d, 19, 0.0),
+                    "vwap": _safe_f(d, 20, 0.0),
+                    "bid": _safe_f(d, 21, 0.0),
+                    "ask": _safe_f(d, 22, 0.0),
+                }
     except Exception:
         pass
-    return quotes, fetched_time
+
+    return stocks_dict, fetched_time
+
+def score_stock_from_tv(
+    q: dict,
+    market_median_perf1m: float,
+    capital: float,
+    risk_pct: float,
+    fee_rate: float,
+    session_progress: float = 1.0
+) -> dict:
+    sym = q["symbol"]
+    close = q["close"]
+    open_p = q["open"] if q["open"] > 0 else close
+    high = q["high"] if q["high"] > 0 else close
+    low = q["low"] if q["low"] > 0 else close
+    vol = q["volume"]
+    avg_vol = q["avg_vol10"] if q["avg_vol10"] > 0 else (q["avg_vol30"] if q["avg_vol30"] > 0 else max(1.0, vol))
+    atr14 = q["atr"] if q["atr"] > 0 else (close * 0.025)
+    ema20 = q["ema20"]
+    ema50 = q["ema50"]
+    ema200 = q["ema200"]
+    high_1m = q["high_1m"]
+    pct_change = q["change"]
+    perf_1m = q["perf_1m"]
+
+    # تطبيع السيولة اللحظية حسب الوقت المنقضي من الجلسة
+    expected_vol_now = max(1.0, avg_vol * max(0.04, session_progress)) if avg_vol > 0 else 1.0
+    pace_rvol = (vol / expected_vol_now) if vol > 0 else 0.0
+
+    avg_turnover = close * avg_vol
+    projected_turnover = close * (vol / max(0.05, session_progress)) if vol > 0 else avg_turnover
+    effective_turnover_m = max(avg_turnover, projected_turnover) / 1_000_000
+
+    candle_range = max(0.0, high - low)
+    close_pos = ((close - low) / candle_range) if candle_range > 0 else 0.5
+
+    flow_res = analyze_intraday_flow(q, fallback_close=close, session_progress=session_progress)
+
+    pts_trend = 0       # 30 نقطة: الاتجاه اليومي والقوة النسبية
+    pts_wyckoff = 0     # 35 نقطة: وتيرة السيولة اللحظية وبصمة الحيتان
+    pts_intraday = 0    # 35 نقطة: التدفق اللحظي (VWAP + 15m Momentum + CLV)
+    tags = []
+    setup_type = "👀 مراقبة"
+
+    # 1. الاتجاه اليومي والقوة النسبية (30 نقطة)
+    if ema200 > 0:
+        if close > ema200:
+            pts_trend += 12
+            tags.append("فوق EMA200")
+            if ema50 > ema200:
+                pts_trend += 6
+        else:
+            tags.append("تحت EMA200")
+    elif close > ema50:
+        pts_trend += 10
+        tags.append("فوق EMA50")
+
+    if close > ema20 and ema20 > ema50:
+        pts_trend += 6
+        tags.append("ترتيب متوسطات صاعد")
+
+    rs_alpha = perf_1m - market_median_perf1m
+    if rs_alpha > 2.0:
+        pts_trend += 6
+        tags.append(f"قوة نسبية (+{rs_alpha:.1f}%)")
+    elif rs_alpha > 0:
+        pts_trend += 3
+
+    # 2. وتيرة السيولة اللحظية وبصمة الحيتان (35 نقطة)
+    is_breakout = (close >= high_1m * 0.994) and (high_1m > 0) and (pct_change > 0.4)
+    if is_breakout and pace_rvol >= 1.35:
+        pts_wyckoff = 35
+        tags.append(f"اختراق قمة شهرية ({pace_rvol:.1f}x)")
+        setup_type = "🚀 اختراق مؤكد"
+    elif pace_rvol >= 1.65 and candle_range < (0.95 * atr14) and close_pos >= 0.55:
+        pts_wyckoff = 30
+        tags.append(f"امتصاص مؤسسي ({pace_rvol:.1f}x)")
+        setup_type = "🐋 امتصاص حيتان"
+    elif pace_rvol >= 1.45 and pct_change > 0.3 and close >= open_p:
+        pts_wyckoff = 26
+        tags.append(f"انفجار سيولة ({pace_rvol:.1f}x)")
+        setup_type = "🔥 تدفق سيولة"
+    elif pace_rvol >= 1.15 and pct_change > 0:
+        pts_wyckoff = 16
+        tags.append(f"سيولة نشطة ({pace_rvol:.1f}x)")
+        setup_type = "📈 زخم سيولة"
+    elif session_progress >= 0.75 and pct_change < 0 and 0 < pace_rvol <= 0.65 and close > ema50:
+        # جفاف العرض لا يُحتسب إلا في الربع الأخير من الجلسة أو بعد الإغلاق
+        pts_wyckoff = 20
+        tags.append(f"جفاف عرض ({pace_rvol:.1f}x)")
+        setup_type = "🎯 تصحيح بلا بائع"
+
+    # 3. نبض التدفق اللحظي داخل الجلسة (35 نقطة)
+    vwap_diff = flow_res["vwap_diff_pct"]
+    if vwap_diff >= 0.4:
+        pts_intraday += 15
+        tags.append(f"فوق VWAP (+{vwap_diff:.1f}%)")
+    elif vwap_diff > 0:
+        pts_intraday += 8
+
+    if flow_res["rsi15"] >= 56:
+        pts_intraday += 8
+    elif flow_res["rsi15"] >= 50:
+        pts_intraday += 4
+
+    if flow_res["macd15"] > flow_res["macds15"]:
+        pts_intraday += 5
+
+    if flow_res["clv_pct"] >= 68.0:
+        pts_intraday += 7
+
+    score = min(100, pts_trend + pts_wyckoff + pts_intraday)
+
+    entry = close
+    stop_loss = max(0.01, entry - (2.0 * atr14))
+    risk_per_share = max(0.01, entry - stop_loss)
+
+    tp1 = entry + (1.618 * risk_per_share)
+    tp2 = entry + (2.618 * risk_per_share)
+    tp3 = entry + (3.618 * risk_per_share)
+
+    risk_amount = capital * (risk_pct / 100.0)
+    shares = int(risk_amount // risk_per_share) if risk_per_share > 0 else 0
+    position_value = shares * entry
+    net_profit_tp1 = (shares * (tp1 - entry)) - (position_value * fee_rate)
+
+    return {
+        "الرمز": sym,
+        "اسم الشركة": q["name"],
+        "Ticker": f"{sym}.CA",
+        "السكور": score,
+        "نوع الإشارة": setup_type,
+        "الرأي اللحظي": flow_res["short_verdict"],
+        "الإغلاق": round(close, 2),
+        "ATR14": round(atr14, 3),
+        "التغير %": round(pct_change, 2),
+        "الفوليوم": round(pace_rvol, 2),
+        "فرق VWAP %": round(vwap_diff, 2),
+        "القوة النسبية %": round(rs_alpha, 1),
+        "السيولة (مليون)": round(effective_turnover_m, 2),
+        "الوقف (2xATR)": round(stop_loss, 2),
+        "TP1": round(tp1, 2),
+        "TP2": round(tp2, 2),
+        "TP3": round(tp3, 2),
+        "الأسهم": shares,
+        "قيمة الصفقة": round(position_value, 0),
+        "صافي TP1": round(net_profit_tp1, 0),
+        "التشخيص الفني": " | ".join(tags) if tags else "حركة عرضية / تجميع هادئ",
+        "score_parts": {
+            "الاتجاه اليومي (30)": pts_trend,
+            "وتيرة السيولة ووايكوف (35)": pts_wyckoff,
+            "التدفق اللحظي VWAP (35)": pts_intraday
+        },
+        "intraday_flow": flow_res,
+        "tv_raw": q,
+        "TradingView": f"https://www.tradingview.com/chart/?symbol=EGX:{sym}"
+    }
+
+# ==========================================
+# سحب الشموع التاريخية عند الطلب لسهم واحد فقط
+# ==========================================
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_single_stock_history(ticker: str) -> pd.DataFrame:
+    try:
+        df = yf.download(ticker, period="2y", interval="1d", progress=False, auto_adjust=True)
+        if df is None or df.empty:
+            return pd.DataFrame()
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        df = df.dropna(subset=["Close", "High", "Low", "Open", "Volume"])
+        if df.empty:
+            return pd.DataFrame()
+        df["EMA20"] = df["Close"].ewm(span=20, adjust=False).mean()
+        df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
+        df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
+        df["VolSMA20"] = df["Volume"].rolling(20).mean()
+        return df
+    except Exception:
+        return pd.DataFrame()
 
 # ==========================================
 # محرك الحسابات الفلكية ومعادلات جان
@@ -885,234 +1324,7 @@ def compute_gann_and_planetary(pivot_date: date, pivot_price: float, is_pivot_lo
     return sq9_prices, time_targets, upcoming_aspects
 
 # ==========================================
-# 1. محرك جلب البيانات التاريخية
-# ==========================================
-@st.cache_data(ttl=900, show_spinner=False)
-def fetch_all_market_data(tickers: tuple) -> dict:
-    data_map = {}
-    tickers_list = list(tickers)
-    batch_size = 65
-
-    for i in range(0, len(tickers_list), batch_size):
-        batch = tickers_list[i:i + batch_size]
-        try:
-            raw = yf.download(
-                batch,
-                period="2y",
-                interval="1d",
-                group_by="ticker",
-                threads=True,
-                progress=False,
-                auto_adjust=True
-            )
-            if raw is None or raw.empty:
-                continue
-
-            if len(batch) == 1:
-                t = batch[0]
-                df_t = raw.copy()
-                if isinstance(df_t.columns, pd.MultiIndex):
-                    df_t.columns = df_t.columns.get_level_values(0)
-                df_t = df_t.dropna(subset=["Close", "High", "Low", "Open", "Volume"])
-                if not df_t.empty:
-                    data_map[t] = df_t
-            else:
-                lvl0 = raw.columns.get_level_values(0)
-                for t in batch:
-                    if t in lvl0:
-                        df_t = raw[t].copy()
-                        df_t = df_t.dropna(subset=["Close", "High", "Low", "Open", "Volume"])
-                        if not df_t.empty:
-                            data_map[t] = df_t
-        except Exception:
-            continue
-
-    return data_map
-
-# ==========================================
-# 2. المحرك الفني المتقدم (Wyckoff + SMC + RS)
-# ==========================================
-def compute_advanced_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    df["EMA20"] = df["Close"].ewm(span=20, adjust=False).mean()
-    df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
-    df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
-
-    prev_close = df["Close"].shift(1)
-    tr = pd.concat([
-        df["High"] - df["Low"],
-        (df["High"] - prev_close).abs(),
-        (df["Low"] - prev_close).abs()
-    ], axis=1).max(axis=1)
-    df["ATR14"] = tr.ewm(alpha=1/14, adjust=False).mean()
-
-    sma20 = df["Close"].rolling(20).mean()
-    std20 = df["Close"].rolling(20).std()
-    df["BB_Upper"] = sma20 + 2 * std20
-    df["BB_Lower"] = sma20 - 2 * std20
-    df["BB_Width"] = (df["BB_Upper"] - df["BB_Lower"]) / sma20
-    df["BB_Width_Pct"] = df["BB_Width"].rolling(120).rank(pct=True)
-
-    df["VolSMA20"] = df["Volume"].rolling(20).mean()
-    df["High20_Prev"] = df["High"].rolling(20).max().shift(1)
-    df["Low20_Prev"] = df["Low"].rolling(20).min().shift(1)
-    df["Pct_Change"] = df["Close"].pct_change()
-    df["Turnover"] = df["Close"] * df["Volume"]
-
-    df["Bull_FVG"] = (df["Low"] > df["High"].shift(2)) & ((df["Close"].shift(1) - df["Open"].shift(1)) > 1.1 * df["ATR14"].shift(1))
-    return df
-
-def analyze_stock_pro(ticker: str, df: pd.DataFrame, market_median_ret20: float, min_turnover: float, capital: float, risk_pct: float, fee_rate: float, force_include: bool = False) -> dict:
-    min_bars = 1 if force_include else 205
-    if len(df) < min_bars:
-        return None
-
-    df = compute_advanced_indicators(df)
-    last = df.iloc[-1]
-    prev = df.iloc[-2] if len(df) >= 2 else last
-
-    close = float(last["Close"])
-    open_p = float(last["Open"])
-    high = float(last["High"])
-    low = float(last["Low"])
-    vol = float(last["Volume"])
-    ema50 = float(last["EMA50"])
-    ema200 = float(last["EMA200"])
-    ema200_10d = float(df["EMA200"].iloc[-11]) if len(df) >= 12 else ema200
-    atr14 = float(last["ATR14"]) if pd.notna(last["ATR14"]) and last["ATR14"] > 0 else close * 0.025
-    vol_sma20 = float(last["VolSMA20"]) if pd.notna(last["VolSMA20"]) and last["VolSMA20"] > 0 else max(1.0, vol)
-    high20_prev = float(last["High20_Prev"]) if pd.notna(last["High20_Prev"]) else high
-    pct_change = float(last["Pct_Change"]) if pd.notna(last["Pct_Change"]) else 0.0
-
-    avg_turnover = float(df["Turnover"].tail(20).mean())
-    if not force_include and avg_turnover < min_turnover:
-        return None
-
-    max_abs_move_60d = df["Pct_Change"].tail(60).abs().max()
-    data_warning = "⚠️ فحص تجزئة" if (pd.notna(max_abs_move_60d) and max_abs_move_60d > 0.22) else "✅ نظيفة"
-
-    if not force_include and pct_change >= 0.195:
-        return None
-
-    pts_trend = 0
-    pts_wyckoff = 0
-    pts_smc = 0
-    pts_rs = 0
-    tags = []
-    setup_type = "👀 مراقبة"
-
-    if close > ema200:
-        pts_trend += 20
-        tags.append("فوق EMA200")
-        if ema200 > ema200_10d:
-            pts_trend += 10
-    else:
-        tags.append("تحت EMA200")
-
-    vol_ratio = vol / vol_sma20
-    candle_range = high - low
-    close_pos = (close - low) / candle_range if candle_range > 0 else 0.5
-    is_breakout = close > high20_prev
-
-    if is_breakout and vol_ratio >= 1.5:
-        pts_wyckoff = 35
-        tags.append(f"اختراق وايكوف ({vol_ratio:.1f}x)")
-        setup_type = "🚀 اختراق مؤكد"
-    elif vol_ratio >= 1.5 and candle_range < (0.75 * atr14) and close_pos >= 0.5:
-        pts_wyckoff = 30
-        tags.append(f"امتصاص مؤسسي ({vol_ratio:.1f}x)")
-        setup_type = "🐋 امتصاص حيتان"
-    elif close < prev["Close"] and vol_ratio <= 0.70 and candle_range < (0.8 * atr14) and close > ema50:
-        pts_wyckoff = 25
-        tags.append(f"جفاف عرض ({vol_ratio:.1f}x)")
-        setup_type = "🎯 تصحيح بلا بائع"
-    elif vol_ratio >= 1.3 and close > open_p:
-        pts_wyckoff = 15
-        tags.append(f"سيولة شرائية ({vol_ratio:.1f}x)")
-        setup_type = "📈 زخم سيولة"
-    elif is_breakout and vol_ratio < 1.0:
-        tags.append("⚠️ كسر بفوليوم ضعيف")
-
-    if close > ema50 and ema50 > ema200:
-        pts_smc += 10
-        tags.append("ترتيب متوسطات صاعد")
-    if df["Bull_FVG"].tail(5).any():
-        pts_smc += 10
-        tags.append("فجوة سيولة FVG")
-
-    ret_20d = (close / float(df["Close"].iloc[-21])) - 1.0 if len(df) >= 22 else 0.0
-    rs_alpha = (ret_20d - market_median_ret20) * 100
-    if rs_alpha > 2.0:
-        pts_rs = 15
-        tags.append(f"قوة نسبية (+{rs_alpha:.1f}%)")
-    elif rs_alpha > 0:
-        pts_rs = 7
-
-    score = pts_trend + pts_wyckoff + pts_smc + pts_rs
-
-    squeeze_series = (df["BB_Width_Pct"] < 0.25).astype(int)
-    squeeze_days = 0
-    for val in reversed(squeeze_series.tolist()):
-        if val == 1:
-            squeeze_days += 1
-        else:
-            break
-
-    entry = close
-    stop_loss = max(0.01, entry - (2.0 * atr14))
-    risk_per_share = entry - stop_loss
-
-    tp1 = entry + (1.618 * risk_per_share)
-    tp2 = entry + (2.618 * risk_per_share)
-    tp3 = entry + (3.618 * risk_per_share)
-
-    risk_amount = capital * (risk_pct / 100.0)
-    shares = int(risk_amount // risk_per_share) if risk_per_share > 0 else 0
-    position_value = shares * entry
-
-    gross_profit_tp1 = shares * (tp1 - entry)
-    round_trip_fees = position_value * fee_rate
-    net_profit_tp1 = gross_profit_tp1 - round_trip_fees
-
-    clean_symbol = ticker.replace(".CA", "")
-    tv_url = f"https://www.tradingview.com/chart/?symbol=EGX:{clean_symbol}"
-
-    default_flow = analyze_intraday_flow(
-        {"close": close, "open": open_p, "high": high, "low": low, "change": pct_change * 100, "volume": vol, "avg_vol10": vol_sma20},
-        fallback_close=close
-    )
-
-    return {
-        "الرمز": clean_symbol,
-        "Ticker": ticker,
-        "السكور": score,
-        "نوع الإشارة": setup_type,
-        "الرأي اللحظي": default_flow["short_verdict"],
-        "الإغلاق": round(close, 2),
-        "ATR14": round(atr14, 3),
-        "التغير %": round(pct_change * 100, 2),
-        "الفوليوم": round(vol_ratio, 2),
-        "القوة النسبية %": round(rs_alpha, 1),
-        "السيولة (مليون)": round(avg_turnover / 1_000_000, 2),
-        "انضغاط زمني (يوم)": squeeze_days,
-        "الوقف (2xATR)": round(stop_loss, 2),
-        "TP1": round(tp1, 2),
-        "TP2": round(tp2, 2),
-        "TP3": round(tp3, 2),
-        "الأسهم": shares,
-        "قيمة الصفقة": round(position_value, 0),
-        "صافي TP1": round(net_profit_tp1, 0),
-        "التشخيص الفني": " | ".join(tags) if tags else "لا يوجد زخم",
-        "البيانات": data_warning,
-        "score_parts": {"الاتجاه (30)": pts_trend, "وايكوف (35)": pts_wyckoff, "هيكل SMC (20)": pts_smc, "القوة النسبية (15)": pts_rs},
-        "intraday_flow": default_flow,
-        "tv_raw": {},
-        "TradingView": tv_url,
-        "df": df
-    }
-
-# ==========================================
-# 3. محرك التحليل المالي (Piotroski F-Score)
+# محرك التحليل المالي (Piotroski F-Score)
 # ==========================================
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_fundamental_analysis(ticker: str) -> dict:
@@ -1229,7 +1441,7 @@ def fetch_fundamental_analysis(ticker: str) -> dict:
         return {"error": str(e)}
 
 # ==========================================
-# 4. محرك التحليل الخبري وتحليل المشاعر
+# محرك التحليل الخبري وتحليل المشاعر
 # ==========================================
 POS_WORDS = ["أرباح", "نمو", "توزيعات", "كوبون", "استحواذ", "ارتفاع", "قفزة", "توسعات", "عقد", "صفقة", "فائض", "توصية بالشراء", "profit", "growth", "dividend", "surge", "acquisition", "beat", "expansion"]
 NEG_WORDS = ["خسائر", "تراجع", "هبوط", "إيقاف", "شطب", "غرامة", "مديونية", "عجز", "انخفاض", "تحقيق", "تصفية", "loss", "decline", "drop", "suspend", "fine", "debt", "miss"]
@@ -1280,16 +1492,19 @@ def fetch_stock_news(symbol_clean: str) -> list:
     return news_list
 
 # ==========================================
-# تحميل المحفظة + جلب قائمة البورصة الديناميكية
+# تحميل المحفظة + حساب الجلسة + المسح اللحظي
 # ==========================================
 my_portfolio = load_portfolio()
 portfolio_clean_syms = [
     item["symbol"].upper().replace(".CA", "").strip()
     for item in my_portfolio if item.get("symbol")
 ]
-portfolio_tickers = [f"{s}.CA" for s in portfolio_clean_syms]
 
-all_egx_dynamic, ticker_names_map, universe_status = fetch_dynamic_egx_universe()
+session_info = get_egx_session_metrics()
+refresh_nonce = st.session_state.get("refresh_nonce", 0)
+
+with st.spinner("🚀 جاري مسح جميع أسهم البورصة وتحديث السيولة اللحظية..."):
+    raw_egx_tv_map, last_live_sync = fetch_full_egx_tv_scanner(refresh_nonce)
 
 # ==========================================
 # الشريط الجانبي (إعدادات السكانر والتليجرام)
@@ -1325,7 +1540,7 @@ with st.sidebar:
         ok, res_msg = send_telegram_message(
             tg_token,
             tg_chat_id,
-            "🦅 <b>EGX Whale Hunter Pro V7.4</b>\n✅ تم ربط بوت التليجرام بنجاح! ستصلك تنبيهات المحفظة ونبض التدفق اللحظي هنا."
+            "🦅 <b>EGX Whale Hunter Pro V7.7</b>\n✅ تم ربط بوت التليجرام بنجاح! محرك وتيرة السيولة اللحظية وموجات إليوت يعملان الآن."
         )
         if ok:
             st.success("✅ وصلت الرسالة التجريبية لتليجرام!")
@@ -1334,27 +1549,18 @@ with st.sidebar:
 
     st.divider()
     st.markdown("## 🎛️ إعدادات السكانر")
-    st.caption(f"📡 القائمة: {universe_status}")
     market_scope = st.radio(
-        "🌐 نطاق المسح:",
+        "🌐 نطاق جدول الرادار:",
         options=[
-            f"كل أسهم البورصة الديناميكية ({len(all_egx_dynamic)} سهم)",
-            f"الأسهم القيادية والنشطة ({len(LEADERS_EGX_TICKERS)} سهم)"
+            f"كل أسهم البورصة المصرية ({len(raw_egx_tv_map)} سهم)",
+            f"الأسهم القيادية والنشطة فقط ({len(LEADERS_EGX_SYMBOLS)} سهم)"
         ],
         index=0
     )
-    base_list = all_egx_dynamic if "كل أسهم" in market_scope else LEADERS_EGX_TICKERS
-
-    extra_tickers = st.text_input("➕ إضافة رموز إضافية للمسح:", placeholder="مثال: VALU, ACTF")
-    added = []
-    if extra_tickers.strip():
-        added = [t.strip().upper() if t.strip().upper().endswith(".CA") else f"{t.strip().upper()}.CA" for t in extra_tickers.split(",") if t.strip()]
-
-    tickers_list = sorted(list(set(base_list + added + portfolio_tickers)))
 
     capital = st.number_input("💰 رأس المال للمقترحات (ج.م)", min_value=5000, value=100000, step=5000)
     risk_pct = st.slider("🛡️ المخاطرة في الصفقة (%)", min_value=0.5, max_value=5.0, value=1.5, step=0.25)
-    min_turnover_m = st.number_input("💧 الحد الأدنى للسيولة (مليون)", min_value=0.1, value=3.0, step=0.5)
+    min_turnover_m = st.number_input("💧 الحد الأدنى للسيولة بالرادار (مليون)", min_value=0.0, value=2.0, step=0.5)
 
     fee_tier = st.radio(
         "💳 شريحة Thndr Trader:",
@@ -1365,132 +1571,97 @@ with st.sidebar:
     )
     fee_rate = 0.0016 if "0.16%" in fee_tier else 0.0037
 
-    min_score = st.slider("🎯 الحد الأدنى للسكور بالسكانر", min_value=0, max_value=100, value=55, step=5)
+    min_score = st.slider("🎯 الحد الأدنى للسكور بجدول الرادار", min_value=0, max_value=100, value=45, step=5)
     alert_buffer_pct = st.slider("🔔 حساسية تنبيه قرب الهدف/الوقف (%)", min_value=0.5, max_value=8.0, value=2.5, step=0.5)
 
-    if st.button("🔄 تحديث القائمة والأسعار الآن", type="primary", use_container_width=True):
-        fetch_dynamic_egx_universe.clear()
-        fetch_all_market_data.clear()
-        fetch_tv_live_quotes.clear()
+    if st.button("🔄 تحديث جميع الأسهم والأسعار الآن", type="primary", use_container_width=True):
+        st.session_state["refresh_nonce"] = refresh_nonce + 1
+        fetch_full_egx_tv_scanner.clear()
+        fetch_single_stock_history.clear()
         st.rerun()
 
 # ==========================================
 # البانر الافتتاحي المضيء (Hero Banner)
 # ==========================================
-session_badge = get_egx_session_status()
 tg_status_txt = "📲 تليجرام متصل" if (tg_token and tg_chat_id) else "📴 تليجرام غير مربوط"
 st.markdown(f"""
 <div class="hero-banner">
     <div>
-        <div class="hero-title">🦅 <span class="hero-accent">EGX WHALE HUNTER</span> PRO <span style="font-size:13px;color:#FACC15;">V7.4</span></div>
-        <div class="hero-sub">🌐 {len(all_egx_dynamic)} سهم • 💼 محفظتي ({len(portfolio_clean_syms)}) • ⚡ التدفق اللحظي وعمق السوق • {tg_status_txt}</div>
+        <div class="hero-title">🦅 <span class="hero-accent">EGX WHALE HUNTER</span> PRO <span style="font-size:13px;color:#FACC15;">V7.7</span></div>
+        <div class="hero-sub">🌐 تغطية كاملة ({len(raw_egx_tv_map)} سهم) • 💧 وتيرة السيولة اللحظية • 🌊 موجات إليوت • 💼 محفظتي ({len(portfolio_clean_syms)}) • {tg_status_txt}</div>
     </div>
-    <div class="session-pill">{session_badge}</div>
+    <div class="session-pill">{session_info['badge']}</div>
 </div>
 """, unsafe_allow_html=True)
 
-with st.spinner(f"🚀 جاري سحب وتحليل بيانات السوق ({len(tickers_list)} سهم)..."):
-    market_data_map = fetch_all_market_data(tuple(tickers_list))
-
-ret20_list = []
-for df_tmp in market_data_map.values():
-    if len(df_tmp) >= 22:
-        ret20_list.append((float(df_tmp["Close"].iloc[-1]) / float(df_tmp["Close"].iloc[-21])) - 1.0)
-market_median_ret20 = float(np.median(ret20_list)) if ret20_list else 0.0
+perf1m_list = [q["perf_1m"] for q in raw_egx_tv_map.values() if q.get("volume", 0) > 0]
+market_median_perf1m = float(np.median(perf1m_list)) if perf1m_list else 0.0
 
 all_analyzed_map = {}
 scanner_results = []
+only_leaders = "الأسهم القيادية" in market_scope
 
-for ticker, df_stock in market_data_map.items():
-    is_in_port = ticker in portfolio_tickers
-    res = analyze_stock_pro(
-        ticker=ticker,
-        df=df_stock,
-        market_median_ret20=market_median_ret20,
-        min_turnover=min_turnover_m * 1_000_000,
+for sym, q_data in raw_egx_tv_map.items():
+    analyzed = score_stock_from_tv(
+        q=q_data,
+        market_median_perf1m=market_median_perf1m,
         capital=capital,
         risk_pct=risk_pct,
         fee_rate=fee_rate,
-        force_include=is_in_port
+        session_progress=session_info["progress"]
     )
-    if res is not None:
-        all_analyzed_map[res["الرمز"]] = res
-        avg_t = res["السيولة (مليون)"] * 1_000_000
-        if avg_t >= (min_turnover_m * 1_000_000) and len(df_stock) >= 205 and res["التغير %"] < 19.5:
-            scanner_results.append(res)
+    all_analyzed_map[sym] = analyzed
 
-# سحب الأسعار اللحظية + بيانات التدفق (VWAP, Bid/Ask, 15m RSI/MACD) من TradingView كل 60 ثانية
-top_radar_syms = [r["الرمز"] for r in sorted(scanner_results, key=lambda x: x["السكور"], reverse=True)[:45]]
-live_query_syms = tuple(sorted(list(set(portfolio_clean_syms + top_radar_syms))))
-tv_live_map, last_live_sync = fetch_tv_live_quotes(live_query_syms)
+    if only_leaders and sym not in LEADERS_EGX_SYMBOLS:
+        continue
+    if analyzed["السيولة (مليون)"] >= min_turnover_m and analyzed["التغير %"] < 19.5:
+        scanner_results.append(analyzed)
 
-for sym, tv_q in tv_live_map.items():
-    if tv_q.get("close", 0) > 0 and sym in all_analyzed_map:
-        live_c = round(tv_q["close"], 2)
-        all_analyzed_map[sym]["الإغلاق"] = live_c
-        all_analyzed_map[sym]["التغير %"] = round(tv_q["change"], 2)
-        atr_u = all_analyzed_map[sym]["ATR14"]
-        sl_u = round(max(0.01, live_c - (2.0 * atr_u)), 2)
-        r_u = max(0.01, live_c - sl_u)
-        all_analyzed_map[sym]["الوقف (2xATR)"] = sl_u
-        all_analyzed_map[sym]["TP1"] = round(live_c + (1.618 * r_u), 2)
-        all_analyzed_map[sym]["TP2"] = round(live_c + (2.618 * r_u), 2)
-        all_analyzed_map[sym]["TP3"] = round(live_c + (3.618 * r_u), 2)
-
-        flow_res = analyze_intraday_flow(tv_q, fallback_close=live_c)
-        all_analyzed_map[sym]["intraday_flow"] = flow_res
-        all_analyzed_map[sym]["الرأي اللحظي"] = flow_res["short_verdict"]
-        all_analyzed_map[sym]["tv_raw"] = tv_q
-
-# إضافة أي سهم في المحفظة غير متوفر على Yahoo Finance (مثل BONY)
-missing_port_syms = [s for s in portfolio_clean_syms if s not in all_analyzed_map]
-for m_sym in missing_port_syms:
-    tv_q = tv_live_map.get(m_sym, {})
-    p_entry_item = next((x for x in my_portfolio if x["symbol"].upper().replace(".CA", "").strip() == m_sym), {})
-    fallback_buy = float(p_entry_item.get("buy_price", 0.0))
-
-    if tv_q and tv_q.get("close", 0) > 0:
-        c_val = round(tv_q["close"], 2)
-        atr_val = round(tv_q["atr"], 3)
-        diag_txt = "📡 بيانات لحظية من TradingView (سهم حديث الإدراج)"
-    else:
-        c_val = round(fallback_buy, 2)
+for m_sym in portfolio_clean_syms:
+    if m_sym not in all_analyzed_map:
+        p_entry_item = next((x for x in my_portfolio if x["symbol"].upper().replace(".CA", "").strip() == m_sym), {})
+        c_val = round(float(p_entry_item.get("buy_price", 0.0)), 2)
         atr_val = round(max(0.01, c_val * 0.025), 3)
-        diag_txt = "⏳ بانتظار بيانات التداول (يُعرض سعر الشراء مؤقتاً)"
+        sl_val = round(max(0.01, c_val - 2.0 * atr_val), 2)
+        r_share = max(0.01, c_val - sl_val)
+        all_analyzed_map[m_sym] = {
+            "الرمز": m_sym,
+            "اسم الشركة": m_sym,
+            "Ticker": f"{m_sym}.CA",
+            "السكور": 0,
+            "نوع الإشارة": "🆕 إدراج حديث",
+            "الرأي اللحظي": "⚪ انتظار",
+            "الإغلاق": c_val,
+            "ATR14": atr_val,
+            "التغير %": 0.0,
+            "الفوليوم": 0.0,
+            "فرق VWAP %": 0.0,
+            "القوة النسبية %": 0.0,
+            "السيولة (مليون)": 0.0,
+            "الوقف (2xATR)": sl_val,
+            "TP1": round(c_val + 1.618 * r_share, 2),
+            "TP2": round(c_val + 2.618 * r_share, 2),
+            "TP3": round(c_val + 3.618 * r_share, 2),
+            "الأسهم": 0,
+            "قيمة الصفقة": 0,
+            "صافي TP1": 0,
+            "التشخيص الفني": "⏳ بانتظار بيانات التداول",
+            "score_parts": {"الاتجاه اليومي (30)": 0, "وتيرة السيولة ووايكوف (35)": 0, "التدفق اللحظي VWAP (35)": 0},
+            "intraday_flow": analyze_intraday_flow({}, fallback_close=c_val, session_progress=session_info["progress"]),
+            "tv_raw": {},
+            "TradingView": f"https://www.tradingview.com/chart/?symbol=EGX:{m_sym}"
+        }
 
-    flow_res = analyze_intraday_flow(tv_q, fallback_close=c_val)
-    sl_val = round(max(0.01, c_val - 2.0 * atr_val), 2)
-    r_share = max(0.01, c_val - sl_val)
-    all_analyzed_map[m_sym] = {
-        "الرمز": m_sym,
-        "Ticker": f"{m_sym}.CA",
-        "السكور": 0,
-        "نوع الإشارة": "🆕 إدراج حديث",
-        "الرأي اللحظي": flow_res["short_verdict"],
-        "الإغلاق": c_val,
-        "ATR14": atr_val,
-        "التغير %": round(tv_q["change"], 2) if tv_q else 0.0,
-        "الفوليوم": 0.0,
-        "القوة النسبية %": 0.0,
-        "السيولة (مليون)": 0.0,
-        "انضغاط زمني (يوم)": 0,
-        "الوقف (2xATR)": sl_val,
-        "TP1": round(c_val + 1.618 * r_share, 2),
-        "TP2": round(c_val + 2.618 * r_share, 2),
-        "TP3": round(c_val + 3.618 * r_share, 2),
-        "الأسهم": 0,
-        "قيمة الصفقة": 0,
-        "صافي TP1": 0,
-        "التشخيص الفني": diag_txt,
-        "البيانات": "🆕 TradingView",
-        "score_parts": {"الاتجاه (30)": 0, "وايكوف (35)": 0, "هيكل SMC (20)": 0, "القوة النسبية (15)": 0},
-        "intraday_flow": flow_res,
-        "tv_raw": tv_q,
-        "TradingView": f"https://www.tradingview.com/chart/?symbol=EGX:{m_sym}",
-        "df": None
-    }
-
-scanner_results.sort(key=lambda x: x["السكور"], reverse=True)
+# ترتيب ديناميكي يكسر التعادل بالسكور اللحظي ووتيرة السيولة
+scanner_results.sort(
+    key=lambda x: (
+        x["السكور"],
+        x["intraday_flow"]["flow_score"],
+        x["الفوليوم"],
+        x["التغير %"]
+    ),
+    reverse=True
+)
 filtered_results = [r for r in scanner_results if r["السكور"] >= min_score]
 
 # ==========================================
@@ -1608,7 +1779,7 @@ if tg_auto_whales and tg_token and tg_chat_id:
             if w_key not in sent_tg_log:
                 w_msg = (
                     f"🐋 <b>إشارة حيتان جديدة — {r['الرمز']}</b> ({r['الرأي اللحظي']})\n"
-                    f"السكور: <b>{r['السكور']}/100</b> ({r['نوع الإشارة']})\n"
+                    f"السكور: <b>{r['السكور']}/100</b> ({r['نوع الإشارة']} | وتيرة {r['الفوليوم']}x)\n"
                     f"السعر: <b>{r['الإغلاق']}</b> | الوقف: <b>{r['الوقف (2xATR)']}</b> | TP1: <b>{r['TP1']}</b>"
                 )
                 ok, _ = send_telegram_message(tg_token, tg_chat_id, w_msg)
@@ -1624,14 +1795,17 @@ if active_alerts:
         st.markdown(f'<div class="alert-box-{level}">{msg}</div>', unsafe_allow_html=True)
 
 # ==========================================
-# شريط التحديث اللحظي السريع (متاح على الهاتف مباشرة)
+# شريط التحديث اللحظي + التحديث التلقائي الحي (Live Auto-Refresh)
 # ==========================================
-ref_c1, ref_c2 = st.columns([2, 1])
+ref_c1, ref_c2, ref_c3 = st.columns([1.8, 1, 1])
 with ref_c1:
-    st.caption(f"📡 مصدر التدفق اللحظي: **TradingView مباشر** | آخر تحديث: **{last_live_sync}** بتوقيت القاهرة (يتحدث تلقائياً كل 60 ثانية)")
+    st.caption(f"📡 **TradingView مباشر ({len(raw_egx_tv_map)} سهم)** | آخر سحب: **{last_live_sync}** | وتيرة السيولة معايرة على **{session_info['progress']*100:.0f}%** من الجلسة")
 with ref_c2:
-    if st.button("🔄 تحديث الأسعار اللحظية الآن", use_container_width=True):
-        fetch_tv_live_quotes.clear()
+    live_auto = st.checkbox("⚡ تحديث تلقائي كل 30 ثانية", value=False)
+with ref_c3:
+    if st.button("🔄 سحب الأسعار والسيولة الآن", use_container_width=True):
+        st.session_state["refresh_nonce"] = refresh_nonce + 1
+        fetch_full_egx_tv_scanner.clear()
         st.rerun()
 
 # ==========================================
@@ -1640,8 +1814,8 @@ with ref_c2:
 main_view = st.radio(
     "🧭 اختر القسم:",
     options=[
-        f"💼 محفظتي الشخصية والتنبيهات ({len(portfolio_rows)})",
-        f"🎯 رادار صفقات السوق ({len(filtered_results)})"
+        f"🎯 رادار صفقات السوق والسيولة الحية ({len(filtered_results)})",
+        f"💼 محفظتي الشخصية والتنبيهات ({len(portfolio_rows)})"
     ],
     horizontal=True,
     label_visibility="collapsed"
@@ -1650,9 +1824,73 @@ main_view = st.radio(
 st.divider()
 
 # ==============================================================================
-# القسم الأول: محفظتي الشخصية وإضافة الأسهم والتنبيهات
+# القسم الأول: رادار صفقات السوق والسيولة الحية
 # ==============================================================================
-if "محفظتي" in main_view:
+if "رادار" in main_view:
+    m1, m2, m3, m4 = st.columns(4)
+    m1.markdown(f'<div class="kpi-card"><div class="kpi-label">📡 أسهم مفحوصة</div><div class="kpi-val">{len(all_analyzed_map)} / {len(raw_egx_tv_map)}</div></div>', unsafe_allow_html=True)
+    m2.markdown(f'<div class="kpi-card"><div class="kpi-label">🎯 صفقات نشطة الآن</div><div class="kpi-val txt-green">{len(filtered_results)}</div></div>', unsafe_allow_html=True)
+    ret_color_cls = "txt-green" if market_median_perf1m >= 0 else "txt-red"
+    m3.markdown(f'<div class="kpi-card"><div class="kpi-label">📈 أداء السوق (شهر)</div><div class="kpi-val {ret_color_cls}">{market_median_perf1m:+.2f}%</div></div>', unsafe_allow_html=True)
+    m4.markdown(f'<div class="kpi-card" style="border-top-color:#FACC15;"><div class="kpi-label">🛡️ المخاطرة المقترحة</div><div class="kpi-val txt-gold">{capital*(risk_pct/100):,.0f} ج.م</div></div>', unsafe_allow_html=True)
+
+    st.write("")
+
+    if filtered_results:
+        st.markdown("### 🏆 أقوى الفرص حسب السيولة والتدفق اللحظي الآن (Top 3 Radar)")
+        top_n = filtered_results[:3]
+        top_cols = st.columns(len(top_n))
+        medals = ["👑 المركز #1", "🔥 المركز #2", "⚡ المركز #3"]
+
+        for idx, (col_box, item) in enumerate(zip(top_cols, top_n)):
+            card_extra = "top-card top-card-gold" if idx == 0 else "top-card"
+            chg_cls = "txt-green" if item["التغير %"] >= 0 else "txt-red"
+            col_box.markdown(f"""
+            <div class="{card_extra}">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                    <span class="txt-gold" style="font-weight:800;font-size:14px;">{medals[idx]}</span>
+                    <span class="badge-bull">{item['نوع الإشارة']}</span>
+                </div>
+                <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px;">
+                    <span class="txt-white" style="font-size:24px;font-weight:900;">{item['الرمز']}</span>
+                    <span class="txt-cyan" style="font-size:18px;font-weight:800;">السكور: {item['السكور']}/100</span>
+                </div>
+                <div style="font-size:13px;margin-bottom:8px;" class="txt-muted">
+                    السعر: <b class="txt-white">{item['الإغلاق']} ج.م</b> (<span class="{chg_cls}">{item['التغير %']:+.2f}%</span>) • وتيرة السيولة: <b class="txt-gold">{item['الفوليوم']}x</b> • {item['الرأي اللحظي']}
+                </div>
+                <div style="display:flex;justify-content:space-between;background:#0B0F19;padding:8px 10px;border-radius:8px;font-size:12px;">
+                    <span>🛑 الوقف: <b class="txt-red">{item['الوقف (2xATR)']}</b></span>
+                    <span>🎯 TP1: <b class="txt-green">{item['TP1']}</b></span>
+                    <span>💰 صافي: <b class="txt-green">{item['صافي TP1']:,.0f}</b></span>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        st.markdown(f"#### 📋 جدول الصفقات المحتملة المرتب بالسيولة والزخم ({len(filtered_results)} سهم)")
+        display_cols = [
+            "الرمز", "السكور", "الرأي اللحظي", "نوع الإشارة", "الإغلاق", "التغير %",
+            "الفوليوم", "فرق VWAP %", "السيولة (مليون)",
+            "الوقف (2xATR)", "TP1", "TP2", "الأسهم", "صافي TP1",
+            "TradingView"
+        ]
+        st.dataframe(
+            pd.DataFrame(filtered_results)[display_cols],
+            use_container_width=True,
+            hide_index=True,
+            height=340,
+            column_config={
+                "TradingView": st.column_config.LinkColumn("شارت TV", display_text="فتح ↗"),
+                "السكور": st.column_config.ProgressColumn("السكور", min_value=0, max_value=100, format="%d"),
+                "الفوليوم": st.column_config.NumberColumn("وتيرة السيولة", format="%.2fx"),
+            }
+        )
+    else:
+        st.warning("⚠️ لا توجد أسهم تطابق شروط السكانر الحالية. افتح القائمة الجانبية (>) لتقليل الحد الأدنى للسكور أو السيولة.")
+
+# ==============================================================================
+# القسم الثاني: محفظتي الشخصية وإضافة الأسهم والتنبيهات
+# ==============================================================================
+else:
     st.markdown("### 💼 محفظتي الشخصية والتنبيهات الفورية")
 
     if st.session_state.get("last_port_msg"):
@@ -1697,7 +1935,7 @@ if "محفظتي" in main_view:
         with fc1:
             in_sym_raw = st.text_input(
                 "اكتب رمز السهم مباشرة:",
-                placeholder="مثال: BONY أو COMI",
+                placeholder="مثال: ABUK أو SKPC أو MFPC",
                 help="اكتب كود السهم في البورصة المصرية بدون .CA"
             )
         with fc2:
@@ -1717,7 +1955,7 @@ if "محفظتي" in main_view:
         if submitted:
             clean_in = re.sub(r"[^A-Z0-9]", "", in_sym_raw.upper().replace(".CA", ""))
             if not clean_in:
-                st.error("⚠️ من فضلك اكتب رمز السهم أولاً (مثل BONY).")
+                st.error("⚠️ من فضلك اكتب رمز السهم أولاً (مثل ABUK).")
             else:
                 updated_list = [p for p in my_portfolio if p["symbol"].upper().replace(".CA", "").strip() != clean_in]
                 updated_list.append({
@@ -1733,7 +1971,7 @@ if "محفظتي" in main_view:
                 st.rerun()
 
     if not portfolio_rows:
-        st.info("📌 اكتب رمز السهم في المربع الأول (مثل BONY) ثم الكمية وسعر الشراء واضغط حفظ، وسيظهر فوراً في الجدول بالأسفل.")
+        st.info("📌 اكتب رمز السهم في المربع الأول (مثل ABUK) ثم الكمية وسعر الشراء واضغط حفظ، وسيظهر فوراً في الجدول بالأسفل.")
     else:
         st.markdown(f"#### 📋 جدول متابعة أسهم المحفظة ({len(portfolio_rows)} أسهم)")
         p_cols = [
@@ -1773,8 +2011,9 @@ if "محفظتي" in main_view:
 
         pc_chart, pc_info = st.columns([2.1, 1])
         with pc_chart:
-            if p_sinfo is not None and p_sinfo.get("df") is not None and not p_sinfo["df"].empty:
-                df_pchart = p_sinfo["df"].tail(100)
+            df_p_hist = fetch_single_stock_history(f"{port_selected_sym}.CA")
+            if not df_p_hist.empty:
+                df_pchart = df_p_hist.tail(100)
                 fig_p = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.04, row_heights=[0.75, 0.25])
                 fig_p.add_trace(go.Candlestick(
                     x=df_pchart.index, open=df_pchart["Open"], high=df_pchart["High"],
@@ -1849,91 +2088,38 @@ if "محفظتي" in main_view:
                     st.error("⚠️ ملف غير صالح.")
 
 # ==============================================================================
-# القسم الثاني: رادار صفقات السوق والتحليل الشامل
+# الدراسة العميقة الشاملة (متاحة لجميع أسهم البورصة بالكامل)
 # ==============================================================================
-else:
-    m1, m2, m3, m4 = st.columns(4)
-    m1.markdown(f'<div class="kpi-card"><div class="kpi-label">📡 أسهم مفحوصة</div><div class="kpi-val">{len(market_data_map)} / {len(tickers_list)}</div></div>', unsafe_allow_html=True)
-    m2.markdown(f'<div class="kpi-card"><div class="kpi-label">🎯 صفقات مرشحة</div><div class="kpi-val txt-green">{len(filtered_results)}</div></div>', unsafe_allow_html=True)
-    ret_color_cls = "txt-green" if market_median_ret20 >= 0 else "txt-red"
-    m3.markdown(f'<div class="kpi-card"><div class="kpi-label">📈 أداء السوق (20 يوم)</div><div class="kpi-val {ret_color_cls}">{market_median_ret20*100:+.1f}%</div></div>', unsafe_allow_html=True)
-    m4.markdown(f'<div class="kpi-card" style="border-top-color:#FACC15;"><div class="kpi-label">🛡️ المخاطرة المقترحة</div><div class="kpi-val txt-gold">{capital*(risk_pct/100):,.0f} ج.م</div></div>', unsafe_allow_html=True)
-
-    st.write("")
-
-    if filtered_results:
-        st.markdown("### 🏆 أقوى الفرص المرصودة اليوم (Top 3 Radar)")
-        top_n = filtered_results[:3]
-        top_cols = st.columns(len(top_n))
-        medals = ["👑 المركز #1", "🔥 المركز #2", "⚡ المركز #3"]
-
-        for idx, (col_box, item) in enumerate(zip(top_cols, top_n)):
-            card_extra = "top-card top-card-gold" if idx == 0 else "top-card"
-            chg_cls = "txt-green" if item["التغير %"] >= 0 else "txt-red"
-            col_box.markdown(f"""
-            <div class="{card_extra}">
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-                    <span class="txt-gold" style="font-weight:800;font-size:14px;">{medals[idx]}</span>
-                    <span class="badge-bull">{item['نوع الإشارة']}</span>
-                </div>
-                <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px;">
-                    <span class="txt-white" style="font-size:24px;font-weight:900;">{item['الرمز']}</span>
-                    <span class="txt-cyan" style="font-size:18px;font-weight:800;">السكور: {item['السكور']}/100</span>
-                </div>
-                <div style="font-size:13px;margin-bottom:8px;" class="txt-muted">
-                    السعر: <b class="txt-white">{item['الإغلاق']} ج.م</b> (<span class="{chg_cls}">{item['التغير %']:+.2f}%</span>) • {item['الرأي اللحظي']}
-                </div>
-                <div style="display:flex;justify-content:space-between;background:#0B0F19;padding:8px 10px;border-radius:8px;font-size:12px;">
-                    <span>🛑 الوقف: <b class="txt-red">{item['الوقف (2xATR)']}</b></span>
-                    <span>🎯 TP1: <b class="txt-green">{item['TP1']}</b></span>
-                    <span>💰 صافي: <b class="txt-green">{item['صافي TP1']:,.0f}</b></span>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-
-        st.markdown(f"#### 📋 جدول الصفقات المحتملة ({len(filtered_results)} سهم)")
-        display_cols = [
-            "الرمز", "السكور", "الرأي اللحظي", "نوع الإشارة", "الإغلاق", "التغير %",
-            "الفوليوم", "القوة النسبية %", "السيولة (مليون)",
-            "الوقف (2xATR)", "TP1", "TP2", "الأسهم", "صافي TP1",
-            "TradingView"
-        ]
-        st.dataframe(
-            pd.DataFrame(filtered_results)[display_cols],
-            use_container_width=True,
-            hide_index=True,
-            height=290,
-            column_config={
-                "TradingView": st.column_config.LinkColumn("شارت TV", display_text="فتح ↗"),
-                "السكور": st.column_config.ProgressColumn("السكور", min_value=0, max_value=100, format="%d"),
-            }
-        )
-    else:
-        st.warning("⚠️ لا توجد أسهم تطابق شروط السكانر الحالية. افتح القائمة الجانبية (>) لتقليل الحد الأدنى للسكور أو السيولة.")
-
-# ==============================================================================
-# الدراسة العميقة المشتركة (التدفق اللحظي وعمق السوق + الشارت + المالي + الزمني + الخبري)
-# ==============================================================================
-combined_symbols = sorted(list(set([r["الرمز"] for r in portfolio_rows] + [r["الرمز"] for r in filtered_results])))
-if not combined_symbols and all_analyzed_map:
-    combined_symbols = sorted(list(all_analyzed_map.keys()))
-
-if combined_symbols:
+if all_analyzed_map:
     st.divider()
-    sel_col1, _ = st.columns([1.6, 1])
+    port_set = set([p["الرمز"] for p in portfolio_rows])
+    radar_set = set([r["الرمز"] for r in filtered_results])
+
+    ordered_symbols = (
+        sorted(list(port_set))
+        + [r["الرمز"] for r in filtered_results if r["الرمز"] not in port_set]
+        + sorted([s for s in all_analyzed_map.keys() if s not in port_set and s not in radar_set])
+    )
+
+    def _format_sym_option(sym: str) -> str:
+        info = all_analyzed_map[sym]
+        prefix = "💼 [محفظتي] " if sym in port_set else ("🎯 [رادار] " if sym in radar_set else "📌 ")
+        return f"{prefix}{sym} ({info['اسم الشركة'][:24]})  |  {info['الرأي اللحظي']}  |  السكور: {info['السكور']}/100"
+
+    sel_col1, _ = st.columns([1.8, 1])
     with sel_col1:
         selected_symbol = st.selectbox(
-            "🔬 اختر أي سهم (من محفظتك أو من السوق) للدراسة اللحظية والفنية والمالية:",
-            options=combined_symbols,
-            format_func=lambda sym: f"{'💼 [محفظتي] ' if sym in [p['الرمز'] for p in portfolio_rows] else '🎯 '}{sym}  |  {all_analyzed_map[sym]['الرأي اللحظي']}  |  السكور: {all_analyzed_map[sym]['السكور']}/100"
+            f"🔬 اختر أي سهم من البورصة ({len(ordered_symbols)} سهم متاح — اكتب الرمز للبحث الفوري):",
+            options=ordered_symbols,
+            format_func=_format_sym_option
         )
     selected_data = all_analyzed_map[selected_symbol]
-    has_hist_df = selected_data.get("df") is not None and not selected_data["df"].empty
 
     sub_view = st.radio(
         "📑 اختر نوع التحليل التفصيلي:",
         options=[
             "⚡ التدفق اللحظي وعمق السوق",
+            "🌊 موجات إليوت (Elliott Wave)",
             "📈 الشارت الفني وخطة التنفيذ",
             "📊 التحليل المالي (F-Score)",
             "🪐 التحليل الزمني (جان والكواكب)",
@@ -1952,7 +2138,7 @@ if combined_symbols:
         fk1.markdown(f'<div class="kpi-card"><div class="kpi-label">🧭 القرار اللحظي</div><div class="kpi-val" style="font-size:16px;">{flow["short_verdict"]} ({flow["flow_score"]:+d})</div></div>', unsafe_allow_html=True)
         fk2.markdown(f'<div class="kpi-card"><div class="kpi-label">⚖️ متوسط السيولة VWAP</div><div class="kpi-val {vwap_cls}">{flow["vwap"]} ({flow["vwap_diff_pct"]:+.2f}%)</div></div>', unsafe_allow_html=True)
         fk3.markdown(f'<div class="kpi-card"><div class="kpi-label">⏱️ زخم 15 دقيقة (RSI)</div><div class="kpi-val txt-cyan">{flow["rsi15"]}</div></div>', unsafe_allow_html=True)
-        fk4.markdown(f'<div class="kpi-card" style="border-top-color:#FACC15;"><div class="kpi-label">📊 موقع السعر بمدى اليوم</div><div class="kpi-val txt-gold">{flow["clv_pct"]}%</div></div>', unsafe_allow_html=True)
+        fk4.markdown(f'<div class="kpi-card" style="border-top-color:#FACC15;"><div class="kpi-label">💧 وتيرة السيولة الآن</div><div class="kpi-val txt-gold">{flow["rel_vol"]}x</div></div>', unsafe_allow_html=True)
 
         st.write("")
         fl_col1, fl_col2 = st.columns([1.2, 1])
@@ -2013,7 +2199,6 @@ if combined_symbols:
                     ob_verdict = "🟡 توازن نسبي في عمق الطلبات والعروض"
                     ob_cls = "txt-gold"
 
-                # دمج رأي عمق السوق مع التدفق اللحظي
                 if imb_pct >= 20.0 and flow["flow_score"] >= 20:
                     combined_call = "🚀 <b>توافق صعودي قوي:</b> السعر فوق VWAP والطلبات تتفوق في العمق."
                 elif imb_pct <= -20.0 and flow["flow_score"] <= -20:
@@ -2033,14 +2218,127 @@ if combined_symbols:
                 </div>
                 """, unsafe_allow_html=True)
 
-    elif "الشارت الفني" in sub_view:
-        if not has_hist_df:
-            st.info(f"ℹ️ السهم **{selected_symbol}** حديث الإدراج ولا يمتلك شموعاً تاريخية على Yahoo Finance بعد. السعر اللحظي الحالي من TradingView: **{selected_data['الإغلاق']} ج.م**.")
-            st.link_button(f"🚀 افتح شارت {selected_symbol} على TradingView ↗", selected_data["TradingView"], use_container_width=True)
+    elif "موجات إليوت" in sub_view:
+        df_ew_hist = fetch_single_stock_history(selected_data["Ticker"])
+        st.markdown(f"#### 🌊 الترقيم الموجي الآلي وفق نظرية إليوت (Elliott Wave): {selected_symbol}")
+
+        if df_ew_hist.empty or len(df_ew_hist) < 20:
+            st.info(f"ℹ️ الشموع التاريخية للسهم **{selected_symbol}** غير كافية على Yahoo Finance لترقيم موجات إليوت بعد.")
         else:
-            c_chart, c_plan = st.columns([2.1, 1])
-            with c_chart:
-                df_chart = selected_data["df"].tail(120)
+            ew_ctrl1, ew_ctrl2 = st.columns([1.4, 1])
+            with ew_ctrl1:
+                wave_degree = st.radio(
+                    "🎚️ درجة الموجات (حساسية ZigZag):",
+                    options=[
+                        "موجات متوسطة (Intermediate — 5%)",
+                        "موجات قصيرة/فرعية (Minor — 3%)",
+                        "موجات رئيسية (Primary — 8%)"
+                    ],
+                    horizontal=True,
+                    key=f"ew_deg_{selected_symbol}"
+                )
+            with ew_ctrl2:
+                ew_lookback = st.selectbox(
+                    "📅 المدى الزمني للترقيم:",
+                    options=[120, 180, 260, 450],
+                    index=1,
+                    format_func=lambda d: f"آخر {d} جلسة تداول",
+                    key=f"ew_lb_{selected_symbol}"
+                )
+
+            pct_val = 0.03 if "3%" in wave_degree else (0.08 if "8%" in wave_degree else 0.05)
+            df_ew = df_ew_hist.tail(ew_lookback)
+            ew_res = analyze_elliott_waves(df_ew, pct_thresh=pct_val)
+
+            ek1, ek2, ek3, ek4 = st.columns(4)
+            ek1.markdown(f'<div class="kpi-card"><div class="kpi-label">🌊 الموجة الحالية</div><div class="kpi-val" style="font-size:15px;">{ew_res["wave_name"]}</div></div>', unsafe_allow_html=True)
+            ek2.markdown(f'<div class="kpi-card" style="border-top-color:#EF4444;"><div class="kpi-label">🛑 نقطة إلغاء الترقيم</div><div class="kpi-val txt-red">{ew_res["invalidation"]} ج.م</div></div>', unsafe_allow_html=True)
+            ek3.markdown(f'<div class="kpi-card" style="border-top-color:#22C55E;"><div class="kpi-label">🎯 هدف فيبوناتشي #1</div><div class="kpi-val txt-green">{ew_res["target_1"]} ج.م</div></div>', unsafe_allow_html=True)
+            ek4.markdown(f'<div class="kpi-card" style="border-top-color:#FACC15;"><div class="kpi-label">🏆 هدف فيبوناتشي #2</div><div class="kpi-val txt-gold">{ew_res["target_2"]} ج.م</div></div>', unsafe_allow_html=True)
+
+            st.write("")
+            ew_c1, ew_c2 = st.columns([2.1, 1])
+
+            with ew_c1:
+                fig_ew = go.Figure()
+                fig_ew.add_trace(go.Candlestick(
+                    x=df_ew.index, open=df_ew["Open"], high=df_ew["High"],
+                    low=df_ew["Low"], close=df_ew["Close"], name="السعر"
+                ))
+
+                lp = ew_res["labeled_pivots"]
+                if lp:
+                    piv_x = [p["date"] for p in lp]
+                    piv_y = [p["price"] for p in lp]
+                    piv_txt = [f"{p['label']}<br>{p['price']:.2f}" for p in lp]
+                    piv_pos = ["top center" if p["type"] == "H" else "bottom center" for p in lp]
+
+                    fig_ew.add_trace(go.Scatter(
+                        x=piv_x, y=piv_y,
+                        mode="lines+markers+text",
+                        line=dict(color="#38BDF8", width=2.8),
+                        marker=dict(size=10, color="#FACC15", line=dict(color="#0B0F19", width=1.5)),
+                        text=piv_txt,
+                        textposition=piv_pos,
+                        textfont=dict(color="#FFFFFF", size=12, family="Arial Black"),
+                        name="ترقيم إليوت"
+                    ))
+
+                fig_ew.add_hline(y=ew_res["invalidation"], line_dash="dash", line_color="#F87171", annotation_text=f"إلغاء الترقيم: {ew_res['invalidation']}", annotation_font_color="#F87171")
+                fig_ew.add_hline(y=ew_res["target_1"], line_dash="dot", line_color="#4ADE80", annotation_text=f"هدف 1: {ew_res['target_1']}", annotation_font_color="#4ADE80")
+                fig_ew.add_hline(y=ew_res["target_2"], line_dash="dot", line_color="#FACC15", annotation_text=f"هدف 2: {ew_res['target_2']}", annotation_font_color="#FACC15")
+
+                fig_ew.update_layout(
+                    title=dict(text=f"🌊 خريطة موجات إليوت على شارت {selected_symbol}", font=dict(color="#FFFFFF", size=16)),
+                    height=520, xaxis_rangeslider_visible=False, template="plotly_dark",
+                    paper_bgcolor="#0B0F19", plot_bgcolor="#131C31", font=dict(color="#FFFFFF"),
+                    margin=dict(l=10, r=10, t=45, b=10)
+                )
+                st.plotly_chart(fig_ew, use_container_width=True)
+
+            with ew_c2:
+                st.markdown(f"""
+                <div class="pro-card">
+                    <h4 class="txt-cyan" style="margin-top:0;">🧭 القراءة الموجية: {selected_symbol}</h4>
+                    <p><span class="{ew_res['badge_cls']}">{ew_res['wave_name']}</span></p>
+                    <p class="txt-white"><b>النمط الموجي:</b> {ew_res['pattern_type']}</p>
+                    <hr style="border-color:#26334D;">
+                    <p class="txt-white" style="font-size:14px;line-height:1.6;">{ew_res['summary']}</p>
+                    <hr style="border-color:#26334D;">
+                    <p class="txt-white"><b>نقطة إلغاء السيناريو:</b> <span class="txt-red">{ew_res['invalidation']} ج.م</span></p>
+                    <p class="txt-white"><b>المستهدف الأول:</b> <span class="txt-green">{ew_res['target_1']} ج.م</span></p>
+                    <p class="txt-white"><b>المستهدف الثاني:</b> <span class="txt-gold">{ew_res['target_2']} ج.م</span></p>
+                </div>
+                """, unsafe_allow_html=True)
+
+                if ew_res["rules_check"]:
+                    st.markdown("##### ✅ فحص قواعد إليوت الحاكمة")
+                    df_rules = pd.DataFrame(ew_res["rules_check"], columns=["القاعدة / المعيار", "القيمة", "الحالة"])
+                    df_rules["الحالة"] = df_rules["الحالة"].map({True: "✅ محقق", False: "⚠️ مراقبة"})
+                    st.dataframe(df_rules, use_container_width=True, hide_index=True)
+
+                if lp:
+                    st.markdown("##### 📍 إحداثيات القمم والقيعان المرقّمة")
+                    piv_rows = [
+                        {
+                            "الموجة": p["label"],
+                            "النوع": "قمة ⬆️" if p["type"] == "H" else "قاع ⬇️",
+                            "التاريخ": str(p["date"])[:10],
+                            "السعر": round(p["price"], 2)
+                        }
+                        for p in lp
+                    ]
+                    st.dataframe(pd.DataFrame(piv_rows), use_container_width=True, hide_index=True)
+
+    elif "الشارت الفني" in sub_view:
+        df_hist_sel = fetch_single_stock_history(selected_data["Ticker"])
+        c_chart, c_plan = st.columns([2.1, 1])
+        with c_chart:
+            if df_hist_sel.empty:
+                st.info(f"ℹ️ الشموع التاريخية للسهم **{selected_symbol}** غير متوفرة حالياً على Yahoo Finance. السعر اللحظي الحالي من TradingView: **{selected_data['الإغلاق']} ج.م**.")
+                st.link_button(f"🚀 افتح شارت {selected_symbol} على TradingView ↗", selected_data["TradingView"], use_container_width=True)
+            else:
+                df_chart = df_hist_sel.tail(120)
                 fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.04, row_heights=[0.74, 0.26])
                 fig.add_trace(go.Candlestick(
                     x=df_chart.index, open=df_chart["Open"], high=df_chart["High"],
@@ -2068,38 +2366,38 @@ if combined_symbols:
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
-            with c_plan:
-                st.markdown(f"""
-                <div class="pro-card">
-                    <h4 class="txt-cyan" style="margin-top:0;">📌 خطة التنفيذ: {selected_symbol}</h4>
-                    <p><span class="badge-bull">{selected_data['نوع الإشارة']}</span> &nbsp; <b class="txt-white">السكور: {selected_data['السكور']}/100</b></p>
-                    <p class="txt-muted" style="font-size:13px;"><b class="txt-white">التشخيص:</b> {selected_data['التشخيص الفني']}</p>
-                    <hr style="border-color:#26334D;">
-                    <p class="txt-white"><b>سعر الدخول المرجعي:</b> {selected_data['الإغلاق']} ج.م</p>
-                    <p class="txt-white"><b>وقف الخسارة (2×ATR):</b> <span class="txt-red" style="font-weight:bold;">{selected_data['الوقف (2xATR)']} ج.م</span></p>
-                    <p class="txt-white"><b>الهدف الأول TP1:</b> <span class="txt-green" style="font-weight:bold;">{selected_data['TP1']} ج.م</span></p>
-                    <p class="txt-white"><b>الهدف الثاني TP2:</b> <span class="txt-green" style="font-weight:bold;">{selected_data['TP2']} ج.م</span></p>
-                    <p class="txt-white"><b>الهدف الثالث TP3:</b> <span class="txt-green" style="font-weight:bold;">{selected_data['TP3']} ج.م</span></p>
-                    <hr style="border-color:#26334D;">
-                    <p class="txt-white"><b>حجم الصفقة المقترح:</b> {selected_data['الأسهم']:,} سهم ({selected_data['قيمة الصفقة']:,.0f} ج.م)</p>
-                    <p class="txt-white"><b>صافي ربح TP1:</b> <span class="txt-green" style="font-weight:bold;">{selected_data['صافي TP1']:,.0f} ج.م</span></p>
-                </div>
-                """, unsafe_allow_html=True)
+        with c_plan:
+            st.markdown(f"""
+            <div class="pro-card">
+                <h4 class="txt-cyan" style="margin-top:0;">📌 خطة التنفيذ: {selected_symbol}</h4>
+                <p><span class="badge-bull">{selected_data['نوع الإشارة']}</span> &nbsp; <b class="txt-white">السكور: {selected_data['السكور']}/100</b></p>
+                <p class="txt-muted" style="font-size:13px;"><b class="txt-white">التشخيص:</b> {selected_data['التشخيص الفني']}</p>
+                <hr style="border-color:#26334D;">
+                <p class="txt-white"><b>سعر الدخول المرجعي:</b> {selected_data['الإغلاق']} ج.م</p>
+                <p class="txt-white"><b>وقف الخسارة (2×ATR):</b> <span class="txt-red" style="font-weight:bold;">{selected_data['الوقف (2xATR)']} ج.م</span></p>
+                <p class="txt-white"><b>الهدف الأول TP1:</b> <span class="txt-green" style="font-weight:bold;">{selected_data['TP1']} ج.م</span></p>
+                <p class="txt-white"><b>الهدف الثاني TP2:</b> <span class="txt-green" style="font-weight:bold;">{selected_data['TP2']} ج.م</span></p>
+                <p class="txt-white"><b>الهدف الثالث TP3:</b> <span class="txt-green" style="font-weight:bold;">{selected_data['TP3']} ج.م</span></p>
+                <hr style="border-color:#26334D;">
+                <p class="txt-white"><b>حجم الصفقة المقترح:</b> {selected_data['الأسهم']:,} سهم ({selected_data['قيمة الصفقة']:,.0f} ج.م)</p>
+                <p class="txt-white"><b>صافي ربح TP1:</b> <span class="txt-green" style="font-weight:bold;">{selected_data['صافي TP1']:,.0f} ج.م</span></p>
+            </div>
+            """, unsafe_allow_html=True)
 
-                parts = selected_data["score_parts"]
-                fig_score = go.Figure(go.Bar(
-                    x=list(parts.values()), y=list(parts.keys()), orientation="h",
-                    marker_color=["#F59E0B", "#38BDF8", "#A855F7", "#4ADE80"],
-                    text=[f"{v} نقطة" for v in parts.values()], textposition="auto", textfont=dict(color="#FFFFFF")
-                ))
-                fig_score.update_layout(
-                    title=dict(text="🧩 تفكيك نقاط السكور", font=dict(color="#FFFFFF", size=14)),
-                    height=210, template="plotly_dark", paper_bgcolor="#131C31", plot_bgcolor="#131C31",
-                    font=dict(color="#FFFFFF"), xaxis=dict(range=[0, 40], showgrid=False, visible=False),
-                    margin=dict(l=10, r=10, t=35, b=10)
-                )
-                st.plotly_chart(fig_score, use_container_width=True)
-                st.link_button("🚀 افتح على TradingView ↗", selected_data["TradingView"], use_container_width=True)
+            parts = selected_data["score_parts"]
+            fig_score = go.Figure(go.Bar(
+                x=list(parts.values()), y=list(parts.keys()), orientation="h",
+                marker_color=["#F59E0B", "#38BDF8", "#4ADE80"],
+                text=[f"{v} نقطة" for v in parts.values()], textposition="auto", textfont=dict(color="#FFFFFF")
+            ))
+            fig_score.update_layout(
+                title=dict(text="🧩 تفكيك نقاط السكور الديناميكي", font=dict(color="#FFFFFF", size=14)),
+                height=210, template="plotly_dark", paper_bgcolor="#131C31", plot_bgcolor="#131C31",
+                font=dict(color="#FFFFFF"), xaxis=dict(range=[0, 40], showgrid=False, visible=False),
+                margin=dict(l=10, r=10, t=35, b=10)
+            )
+            st.plotly_chart(fig_score, use_container_width=True)
+            st.link_button("🚀 افتح على TradingView ↗", selected_data["TradingView"], use_container_width=True)
 
     elif "التحليل المالي" in sub_view:
         st.markdown(f"#### 📊 التحليل المالي والأساسي (Piotroski F-Score): {selected_symbol}")
@@ -2146,11 +2444,11 @@ if combined_symbols:
                     st.info("ℹ️ القوائم المالية التفصيلية غير مكتملة لهذا الرمز في قاعدة بيانات Yahoo Finance.")
 
     elif "التحليل الزمني" in sub_view:
-        if not has_hist_df:
-            st.info(f"ℹ️ السهم **{selected_symbol}** حديث الإدراج ولا يمتلك تاريخاً سعرياً كافياً لرسم خريطة جان بعد.")
+        df_time = fetch_single_stock_history(selected_data["Ticker"])
+        if df_time.empty:
+            st.info(f"ℹ️ الشموع التاريخية للسهم **{selected_symbol}** غير متوفرة حالياً لرسم خريطة جان.")
         else:
             st.markdown(f"#### 🪐 التحليل الزمني والفلكي (Gann Squaring + Planetary Cycles): {selected_symbol}")
-            df_time = selected_data["df"].copy()
             curr_p = selected_data["الإغلاق"]
 
             recent_90 = df_time.tail(90)
@@ -2285,3 +2583,12 @@ if combined_symbols:
                     </a>
                 </div>
                 """, unsafe_allow_html=True)
+
+# ==========================================
+# حلقة التحديث التلقائي الحي عند التفعيل
+# ==========================================
+if live_auto:
+    time.sleep(30)
+    st.session_state["refresh_nonce"] = refresh_nonce + 1
+    fetch_full_egx_tv_scanner.clear()
+    st.rerun()
