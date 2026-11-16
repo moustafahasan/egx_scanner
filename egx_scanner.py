@@ -870,7 +870,7 @@ LEADERS_EGX_SYMBOLS = {
     "BONY", "QNBA", "VALU", "ACTF"
 }
 
-@st.cache_data(ttl=20, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)
 def fetch_full_egx_tv_scanner(cache_buster: int = 0) -> tuple:
     stocks_dict = {}
     fetched_time = get_cairo_now().strftime("%H:%M:%S")
@@ -1794,13 +1794,13 @@ if active_alerts:
         st.markdown(f'<div class="alert-box-{level}">{msg}</div>', unsafe_allow_html=True)
 
 # ==========================================
-# شريط التحديث اللحظي + التحديث التلقائي الحي (Live Auto-Refresh)
+# شريط التحديث اللحظي + التحديث التلقائي الحي (كل 5 دقائق)
 # ==========================================
 ref_c1, ref_c2, ref_c3 = st.columns([1.8, 1, 1])
 with ref_c1:
     st.caption(f"📡 **TradingView مباشر ({len(raw_egx_tv_map)} سهم)** | آخر سحب: **{last_live_sync}** | وتيرة السيولة معايرة على **{session_info['progress']*100:.0f}%** من الجلسة")
 with ref_c2:
-    live_auto = st.checkbox("⚡ تحديث تلقائي كل 30 ثانية", value=False)
+    live_auto = st.checkbox("⚡ تحديث تلقائي كل 5 دقائق", value=False)
 with ref_c3:
     if st.button("🔄 سحب الأسعار والسيولة الآن", use_container_width=True):
         st.session_state["refresh_nonce"] = refresh_nonce + 1
@@ -2585,7 +2585,7 @@ if all_analyzed_map:
                 """, unsafe_allow_html=True)
 
 # ==========================================
-# حلقة التحديث التلقائي الحي عند التفعيل
+# حلقة التحديث التلقائي الحي كل 5 دقائق عند التفعيل
 # ==========================================
 if live_auto:
     time.sleep(300)
