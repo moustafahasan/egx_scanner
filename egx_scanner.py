@@ -36,7 +36,7 @@ from datetime import datetime, timezone, timedelta, date
 # إعدادات الصفحة والتصميم البصري عالي التباين
 # ==========================================
 st.set_page_config(
-    page_title="EGX Whale Hunter Pro V7.7",
+    page_title="EGX Whale Hunter Pro V7.8",
     page_icon="🦅",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -979,14 +979,14 @@ def score_stock_from_tv(
     expected_vol_now = max(1.0, avg_vol * max(0.04, session_progress)) if avg_vol > 0 else 1.0
     pace_rvol = (vol / expected_vol_now) if vol > 0 else 0.0
 
-    avg_turnover = close * avg_vol
-    projected_turnover = close * (vol / max(0.05, session_progress)) if vol > 0 else avg_turnover
-    effective_turnover_m = max(avg_turnover, projected_turnover) / 1_000_000
-
     candle_range = max(0.0, high - low)
     close_pos = ((close - low) / candle_range) if candle_range > 0 else 0.5
 
     flow_res = analyze_intraday_flow(q, fallback_close=close, session_progress=session_progress)
+
+    # السيولة الفعلية المنفذة منذ بداية الجلسة حتى هذه اللحظة بالمليون جنيه
+    exec_price = flow_res["vwap"] if flow_res["vwap"] > 0 else close
+    effective_turnover_m = ((vol * exec_price) / 1_000_000) if vol > 0 else 0.0
 
     pts_trend = 0       # 30 نقطة: الاتجاه اليومي والقوة النسبية
     pts_wyckoff = 0     # 35 نقطة: وتيرة السيولة اللحظية وبصمة الحيتان
@@ -1037,7 +1037,6 @@ def score_stock_from_tv(
         tags.append(f"سيولة نشطة ({pace_rvol:.1f}x)")
         setup_type = "📈 زخم سيولة"
     elif session_progress >= 0.75 and pct_change < 0 and 0 < pace_rvol <= 0.65 and close > ema50:
-        # جفاف العرض لا يُحتسب إلا في الربع الأخير من الجلسة أو بعد الإغلاق
         pts_wyckoff = 20
         tags.append(f"جفاف عرض ({pace_rvol:.1f}x)")
         setup_type = "🎯 تصحيح بلا بائع"
@@ -1540,7 +1539,7 @@ with st.sidebar:
         ok, res_msg = send_telegram_message(
             tg_token,
             tg_chat_id,
-            "🦅 <b>EGX Whale Hunter Pro V7.7</b>\n✅ تم ربط بوت التليجرام بنجاح! محرك وتيرة السيولة اللحظية وموجات إليوت يعملان الآن."
+            "🦅 <b>EGX Whale Hunter Pro V7.8</b>\n✅ تم ربط بوت التليجرام بنجاح! محرك السيولة الفعلية وموجات إليوت يعملان الآن."
         )
         if ok:
             st.success("✅ وصلت الرسالة التجريبية لتليجرام!")
@@ -1560,7 +1559,7 @@ with st.sidebar:
 
     capital = st.number_input("💰 رأس المال للمقترحات (ج.م)", min_value=5000, value=100000, step=5000)
     risk_pct = st.slider("🛡️ المخاطرة في الصفقة (%)", min_value=0.5, max_value=5.0, value=1.5, step=0.25)
-    min_turnover_m = st.number_input("💧 الحد الأدنى للسيولة بالرادار (مليون)", min_value=0.0, value=2.0, step=0.5)
+    min_turnover_m = st.number_input("💧 الحد الأدنى للسيولة الفعلية (مليون ج.م)", min_value=0.0, value=0.5, step=0.25)
 
     fee_tier = st.radio(
         "💳 شريحة Thndr Trader:",
@@ -1587,8 +1586,8 @@ tg_status_txt = "📲 تليجرام متصل" if (tg_token and tg_chat_id) else
 st.markdown(f"""
 <div class="hero-banner">
     <div>
-        <div class="hero-title">🦅 <span class="hero-accent">EGX WHALE HUNTER</span> PRO <span style="font-size:13px;color:#FACC15;">V7.7</span></div>
-        <div class="hero-sub">🌐 تغطية كاملة ({len(raw_egx_tv_map)} سهم) • 💧 وتيرة السيولة اللحظية • 🌊 موجات إليوت • 💼 محفظتي ({len(portfolio_clean_syms)}) • {tg_status_txt}</div>
+        <div class="hero-title">🦅 <span class="hero-accent">EGX WHALE HUNTER</span> PRO <span style="font-size:13px;color:#FACC15;">V7.8</span></div>
+        <div class="hero-sub">🌐 تغطية كاملة ({len(raw_egx_tv_map)} سهم) • 💧 السيولة الفعلية بالجنيه • 🌊 موجات إليوت • 💼 محفظتي ({len(portfolio_clean_syms)}) • {tg_status_txt}</div>
     </div>
     <div class="session-pill">{session_info['badge']}</div>
 </div>
@@ -1856,7 +1855,7 @@ if "رادار" in main_view:
                     <span class="txt-cyan" style="font-size:18px;font-weight:800;">السكور: {item['السكور']}/100</span>
                 </div>
                 <div style="font-size:13px;margin-bottom:8px;" class="txt-muted">
-                    السعر: <b class="txt-white">{item['الإغلاق']} ج.م</b> (<span class="{chg_cls}">{item['التغير %']:+.2f}%</span>) • وتيرة السيولة: <b class="txt-gold">{item['الفوليوم']}x</b> • {item['الرأي اللحظي']}
+                    السعر: <b class="txt-white">{item['الإغلاق']} ج.م</b> (<span class="{chg_cls}">{item['التغير %']:+.2f}%</span>) • السيولة: <b class="txt-cyan">{item['السيولة (مليون)']:.2f} م.ج</b> (<b class="txt-gold">{item['الفوليوم']}x</b>) • {item['الرأي اللحظي']}
                 </div>
                 <div style="display:flex;justify-content:space-between;background:#0B0F19;padding:8px 10px;border-radius:8px;font-size:12px;">
                     <span>🛑 الوقف: <b class="txt-red">{item['الوقف (2xATR)']}</b></span>
@@ -1882,10 +1881,11 @@ if "رادار" in main_view:
                 "TradingView": st.column_config.LinkColumn("شارت TV", display_text="فتح ↗"),
                 "السكور": st.column_config.ProgressColumn("السكور", min_value=0, max_value=100, format="%d"),
                 "الفوليوم": st.column_config.NumberColumn("وتيرة السيولة", format="%.2fx"),
+                "السيولة (مليون)": st.column_config.NumberColumn("السيولة الفعلية (مليون ج.م)", format="%.2f"),
             }
         )
     else:
-        st.warning("⚠️ لا توجد أسهم تطابق شروط السكانر الحالية. افتح القائمة الجانبية (>) لتقليل الحد الأدنى للسكور أو السيولة.")
+        st.warning("⚠️ لا توجد أسهم تطابق شروط السكانر الحالية. افتح القائمة الجانبية (>) لتقليل الحد الأدنى للسكور أو السيولة الفعلية.")
 
 # ==============================================================================
 # القسم الثاني: محفظتي الشخصية وإضافة الأسهم والتنبيهات
