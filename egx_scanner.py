@@ -2588,7 +2588,7 @@ if all_analyzed_map:
 # حلقة التحديث التلقائي الحي عند التفعيل
 # ==========================================
 if live_auto:
-    time.sleep(30)
+    time.sleep(300)
     st.session_state["refresh_nonce"] = refresh_nonce + 1
     fetch_full_egx_tv_scanner.clear()
     st.rerun()
