@@ -36,7 +36,7 @@ from datetime import datetime, timezone, timedelta, date
 # إعدادات الصفحة والتصميم البصري عالي التباين
 # ==========================================
 st.set_page_config(
-    page_title="EGX Whale Hunter Pro V7.9",
+    page_title="EGX Whale Hunter Pro V8.0",
     page_icon="🦅",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -251,7 +251,6 @@ def get_cairo_now() -> datetime:
         return datetime.now(timezone(timedelta(hours=2)))
 
 def get_egx_session_metrics() -> dict:
-    """حساب حالة الجلسة ونسبة الوقت المنقضي لتطبيع السيولة اللحظية بدقة"""
     now_cairo = get_cairo_now()
     weekday = now_cairo.weekday()
     is_trading_day = weekday in [6, 0, 1, 2, 3]
@@ -352,7 +351,6 @@ def _load_local_portfolio_file() -> list:
     return []
 
 def load_portfolio(force_cloud_refresh: bool = False) -> tuple:
-    """إرجاع (قائمة المحفظة, حالة الاتصال السحابي)"""
     sb_url, sb_key = get_supabase_creds()
     has_creds = bool(sb_url and sb_key)
 
@@ -360,7 +358,12 @@ def load_portfolio(force_cloud_refresh: bool = False) -> tuple:
         return st.session_state["my_portfolio"], st.session_state.get("cloud_sync_ok", False)
 
     if has_creds:
-        ok, res = _sb_request("GET", "egx_portfolio?select=symbol,shares,buy_price,stop_loss,tp1,tp2&order=symbol.asc")
+        ok, res = _sb_request(
+            "GET",
+            "egx_portfolio?select=symbol,shares,buy_price,stop_loss,tp1,tp2,trailing_enabled,trailing_stage&order=symbol.asc"
+        )
+        if not ok:
+            ok, res = _sb_request("GET", "egx_portfolio?select=symbol,shares,buy_price,stop_loss,tp1,tp2&order=symbol.asc")
         if ok and isinstance(res, list):
             cleaned = []
             for row in res:
@@ -373,6 +376,8 @@ def load_portfolio(force_cloud_refresh: bool = False) -> tuple:
                         "stop_loss": float(row.get("stop_loss", 0.0)),
                         "tp1": float(row.get("tp1", 0.0)),
                         "tp2": float(row.get("tp2", 0.0)),
+                        "trailing_enabled": bool(row.get("trailing_enabled", True)),
+                        "trailing_stage": int(row.get("trailing_stage", 0)),
                     })
             st.session_state["cloud_sync_ok"] = True
             _save_local_portfolio_cache(cleaned)
@@ -392,6 +397,8 @@ def upsert_portfolio_item(item: dict) -> tuple:
         "stop_loss": float(item.get("stop_loss", 0.0)),
         "tp1": float(item.get("tp1", 0.0)),
         "tp2": float(item.get("tp2", 0.0)),
+        "trailing_enabled": bool(item.get("trailing_enabled", True)),
+        "trailing_stage": int(item.get("trailing_stage", 0)),
     }
 
     current_list = [p for p in st.session_state.get("my_portfolio", []) if p["symbol"].upper().replace(".CA", "").strip() != clean_sym]
@@ -406,6 +413,14 @@ def upsert_portfolio_item(item: dict) -> tuple:
             payload=record,
             extra_headers={"Prefer": "resolution=merge-duplicates,return=minimal"}
         )
+        if not ok:
+            base_rec = {k: v for k, v in record.items() if k not in ["trailing_enabled", "trailing_stage"]}
+            ok, err = _sb_request(
+                "POST",
+                "egx_portfolio?on_conflict=symbol",
+                payload=base_rec,
+                extra_headers={"Prefer": "resolution=merge-duplicates,return=minimal"}
+            )
         if ok:
             st.session_state["cloud_sync_ok"] = True
             return True, "☁️ محفوظ سحابياً"
@@ -441,6 +456,8 @@ def sync_full_portfolio_to_cloud(portfolio_list: list) -> tuple:
                 "stop_loss": float(p.get("stop_loss", 0.0)),
                 "tp1": float(p.get("tp1", 0.0)),
                 "tp2": float(p.get("tp2", 0.0)),
+                "trailing_enabled": bool(p.get("trailing_enabled", True)),
+                "trailing_stage": int(p.get("trailing_stage", 0)),
             })
     if not records:
         _save_local_portfolio_cache([])
@@ -451,6 +468,14 @@ def sync_full_portfolio_to_cloud(portfolio_list: list) -> tuple:
         payload=records,
         extra_headers={"Prefer": "resolution=merge-duplicates,return=minimal"}
     )
+    if not ok:
+        base_recs = [{k: v for k, v in r.items() if k not in ["trailing_enabled", "trailing_stage"]} for r in records]
+        ok, err = _sb_request(
+            "POST",
+            "egx_portfolio?on_conflict=symbol",
+            payload=base_recs,
+            extra_headers={"Prefer": "resolution=merge-duplicates,return=minimal"}
+        )
     if ok:
         st.session_state["cloud_sync_ok"] = True
         _save_local_portfolio_cache(records)
@@ -458,7 +483,7 @@ def sync_full_portfolio_to_cloud(portfolio_list: list) -> tuple:
     return False, f"❌ فشلت المزامنة: {err}"
 
 # ==========================================
-# سجل إشعارات التليجرام السحابي (منع التكرار حتى بعد إعادة التشغيل)
+# سجل إشعارات التليجرام السحابي
 # ==========================================
 def load_sent_tg_log(today_str: str, force_refresh: bool = False) -> dict:
     if not force_refresh and "sent_tg_alerts" in st.session_state:
@@ -821,7 +846,7 @@ def analyze_elliott_waves(df: pd.DataFrame, pct_thresh: float = 0.05) -> dict:
 
 
 # ==========================================
-# محرك تحليل التدفق اللحظي (معدّل بوتيرة الوقت الفعلي للجلسة)
+# محرك تحليل التدفق اللحظي
 # ==========================================
 def analyze_intraday_flow(tv_q: dict, fallback_close: float = 0.0, session_progress: float = 1.0) -> dict:
     close_p = tv_q.get("close", 0.0) if tv_q else fallback_close
@@ -1238,6 +1263,7 @@ def score_stock_from_tv(
         "الرأي اللحظي": flow_res["short_verdict"],
         "الإغلاق": round(close, 2),
         "ATR14": round(atr14, 3),
+        "EMA20": round(ema20, 2),
         "التغير %": round(pct_change, 2),
         "الفوليوم": round(pace_rvol, 2),
         "فرق VWAP %": round(vwap_diff, 2),
@@ -1725,7 +1751,7 @@ with st.sidebar:
         ok, res_msg = send_telegram_message(
             tg_token,
             tg_chat_id,
-            "🦅 <b>EGX Whale Hunter Pro V7.9</b>\n✅ تم ربط بوت التليجرام والمزامنة السحابية بنجاح!"
+            "🦅 <b>EGX Whale Hunter Pro V8.0</b>\n✅ تفعيل الوقف المتحرك الآلي والمزامنة السحابية بنجاح!"
         )
         if ok:
             st.success("✅ وصلت الرسالة التجريبية لتليجرام!")
@@ -1775,7 +1801,7 @@ cloud_status_txt = "☁️ سحابة Supabase متصلة" if cloud_connected el
 st.markdown(f"""
 <div class="hero-banner">
     <div>
-        <div class="hero-title">🦅 <span class="hero-accent">EGX WHALE HUNTER</span> PRO <span style="font-size:13px;color:#FACC15;">V7.9</span></div>
+        <div class="hero-title">🦅 <span class="hero-accent">EGX WHALE HUNTER</span> PRO <span style="font-size:13px;color:#FACC15;">V8.0</span></div>
         <div class="hero-sub">🌐 تغطية كاملة ({len(raw_egx_tv_map)} سهم) • {cloud_status_txt} • 💼 محفظتي ({len(portfolio_clean_syms)}) • {tg_status_txt}</div>
     </div>
     <div class="session-pill">{session_info['badge']}</div>
@@ -1821,6 +1847,7 @@ for m_sym in portfolio_clean_syms:
             "الرأي اللحظي": "⚪ انتظار",
             "الإغلاق": c_val,
             "ATR14": atr_val,
+            "EMA20": c_val,
             "التغير %": 0.0,
             "الفوليوم": 0.0,
             "فرق VWAP %": 0.0,
@@ -1852,7 +1879,7 @@ scanner_results.sort(
 filtered_results = [r for r in scanner_results if r["السكور"] >= min_score]
 
 # ==========================================
-# معالجة محفظتي وتوليد الإشعارات الفورية + تسجيلها سحابياً
+# معالجة محفظتي + محرك الوقف المتحرك الآلي (Smart Trailing Stop)
 # ==========================================
 portfolio_rows = []
 active_alerts = []
@@ -1869,6 +1896,8 @@ for item in my_portfolio:
     user_sl = float(item.get("stop_loss", 0.0))
     user_tp1 = float(item.get("tp1", 0.0))
     user_tp2 = float(item.get("tp2", 0.0))
+    trailing_on = bool(item.get("trailing_enabled", True))
+    trailing_stage = int(item.get("trailing_stage", 0))
 
     if not sym or shares <= 0 or buy_p <= 0:
         continue
@@ -1876,12 +1905,71 @@ for item in my_portfolio:
     stock_info = all_analyzed_map.get(sym)
     curr_p = stock_info["الإغلاق"] if (stock_info and stock_info["الإغلاق"] > 0) else buy_p
     atr14 = stock_info["ATR14"] if stock_info else round(buy_p * 0.025, 3)
+    ema20 = stock_info.get("EMA20", curr_p) if stock_info else curr_p
+    vwap_val = stock_info["intraday_flow"].get("vwap", curr_p) if stock_info else curr_p
     short_opinion = stock_info["الرأي اللحظي"] if stock_info else "⚪ انتظار"
 
     sl = user_sl if user_sl > 0 else round(max(0.01, buy_p - 2.0 * atr14), 2)
     risk_unit = max(0.01, buy_p - sl)
     tp1 = user_tp1 if user_tp1 > 0 else round(buy_p + 1.618 * risk_unit, 2)
     tp2 = user_tp2 if user_tp2 > 0 else round(buy_p + 2.618 * risk_unit, 2)
+
+    # تنفيذ الوقف المتحرك الآلي (Smart Trailing Stop)
+    sl_updated = False
+    if trailing_on:
+        be_price = round(buy_p * (1.0 + fee_rate * 2.0), 2)
+        if curr_p >= tp1 and trailing_stage < 1 and be_price < curr_p:
+            new_sl = max(sl, be_price)
+            sl = new_sl
+            trailing_stage = 1
+            sl_updated = True
+            active_alerts.append(("success", f"🛡️ <b>تأمين الصفقة آلياً ({sym}):</b> بعد تحقق <b>TP1</b> تم رفع وقف الخسارة لنقطة التعادل (<b>{new_sl} ج.م</b>)."))
+            tr_key = f"{today_str}_{sym}_TRAIL_BE"
+            if tr_key not in sent_tg_log and tg_auto_port and tg_token and tg_chat_id:
+                ok_t, _ = send_telegram_message(
+                    tg_token, tg_chat_id,
+                    f"🛡️ <b>تأمين الصفقة آلياً (Breakeven) — {sym}</b>\nالسعر حقق <b>TP1 ({tp1})</b>، وتم رفع وقف الخسارة تلقائياً لنقطة التعادل: <b>{new_sl} ج.م</b>."
+                )
+                if ok_t:
+                    record_sent_tg_alert(tr_key, get_cairo_now().strftime("%H:%M"), sent_tg_log)
+
+        if curr_p >= tp2:
+            anchor = max(vwap_val, ema20) if (vwap_val > 0 and ema20 > 0) else curr_p
+            cand_sl = round(min(curr_p - 0.5 * atr14, anchor * 0.992), 2)
+            if cand_sl > sl * 1.003 and cand_sl < curr_p:
+                sl = cand_sl
+                trailing_stage = 2
+                sl_updated = True
+                active_alerts.append(("success", f"🚀 <b>ملاحقة الأرباح ({sym}):</b> تم رفع وقف حماية الأرباح آلياً إلى <b>{cand_sl} ج.م</b> خلف خط السيولة."))
+                tr2_key = f"{today_str}_{sym}_TRAIL_{int(cand_sl * 100)}"
+                if tr2_key not in sent_tg_log and tg_auto_port and tg_token and tg_chat_id:
+                    ok_t2, _ = send_telegram_message(
+                        tg_token, tg_chat_id,
+                        f"🚀 <b>ملاحقة الأرباح (Trailing Stop) — {sym}</b>\nالسعر الحالي: <b>{curr_p} ج.م</b> | تم رفع وقف حماية الأرباح إلى: <b>{cand_sl} ج.م</b>."
+                    )
+                    if ok_t2:
+                        record_sent_tg_alert(tr2_key, get_cairo_now().strftime("%H:%M"), sent_tg_log)
+
+    if sl_updated:
+        upsert_portfolio_item({
+            "symbol": sym,
+            "shares": shares,
+            "buy_price": buy_p,
+            "stop_loss": sl,
+            "tp1": tp1,
+            "tp2": tp2,
+            "trailing_enabled": trailing_on,
+            "trailing_stage": trailing_stage,
+        })
+
+    if not trailing_on:
+        trail_badge = "⏸️ معطّل"
+    elif trailing_stage >= 2:
+        trail_badge = "🚀 ملاحقة TP2"
+    elif trailing_stage == 1:
+        trail_badge = "🛡️ مؤمّن (تعادل)"
+    else:
+        trail_badge = "⏳ بانتظار TP1"
 
     cost_val = shares * buy_p
     mkt_val = shares * curr_p
@@ -1939,6 +2027,7 @@ for item in my_portfolio:
         "الرمز": sym,
         "الرأي اللحظي": short_opinion,
         "حالة التنبيه": alert_status,
+        "الوقف المتحرك": trail_badge,
         "السكور الفني": stock_info["السكور"] if stock_info else 0,
         "الكمية": shares,
         "متوسط الشراء": round(buy_p, 2),
@@ -1953,6 +2042,8 @@ for item in my_portfolio:
         "TP2": tp2,
         "التشخيص الفني": stock_info["التشخيص الفني"] if stock_info else "بانتظار البيانات",
         "progress_ratio": progress_ratio,
+        "trailing_enabled": trailing_on,
+        "trailing_stage": trailing_stage,
         "TradingView": f"https://www.tradingview.com/chart/?symbol=EGX:{sym}",
         "stock_info": stock_info
     })
@@ -1976,7 +2067,7 @@ if active_alerts:
         st.markdown(f'<div class="alert-box-{level}">{msg}</div>', unsafe_allow_html=True)
 
 # ==========================================
-# شريط التحديث اللحظي + التحديث التلقائي الحي (كل 5 دقائق)
+# شريط التحديث اللحظي
 # ==========================================
 ref_c1, ref_c2, ref_c3 = st.columns([1.8, 1, 1])
 with ref_c1:
@@ -1991,7 +2082,7 @@ with ref_c3:
         st.rerun()
 
 # ==========================================
-# زر التنقل الرئيسي البارز
+# زر التنقل الرئيسي
 # ==========================================
 main_view = st.radio(
     "🧭 اختر القسم:",
@@ -2071,13 +2162,13 @@ if "رادار" in main_view:
         st.warning("⚠️ لا توجد أسهم تطابق شروط السكانر الحالية. افتح القائمة الجانبية (>) لتقليل الحد الأدنى للسكور أو السيولة الفعلية.")
 
 # ==============================================================================
-# القسم الثاني: محفظتي الشخصية وإضافة الأسهم والتنبيهات
+# القسم الثاني: محفظتي الشخصية وإضافة الأسهم والوقف المتحرك
 # ==============================================================================
 else:
-    st.markdown("### 💼 محفظتي الشخصية والتنبيهات الفورية")
+    st.markdown("### 💼 محفظتي الشخصية وإدارة المخاطر الآلية")
 
     if not cloud_connected:
-        st.info("💡 **نصيحة:** أدخل `SUPABASE_URL` و `SUPABASE_KEY` في القائمة الجانبية (أو في Streamlit Secrets) لضمان حفظ محفظتك وسجل التنبيهات سحابياً وعدم مسحها عند إعادة تشغيل السيرفر.")
+        st.info("💡 **نصيحة:** أدخل `SUPABASE_URL` و `SUPABASE_KEY` في القائمة الجانبية (أو في Streamlit Secrets) لضمان حفظ محفظتك سحابياً.")
 
     if st.session_state.get("last_port_msg"):
         st.success(st.session_state["last_port_msg"])
@@ -2107,7 +2198,7 @@ else:
                 for pr in portfolio_rows:
                     lines.append(
                         f"• <b>{pr['الرمز']}</b> ({pr['الرأي اللحظي']}): السعر {pr['السعر الحالي']} ({pr['العائد %']:+.1f}%) | "
-                        f"SL: {pr['وقف الخسارة']} | TP1: {pr['TP1']}"
+                        f"SL: {pr['وقف الخسارة']} ({pr['الوقف المتحرك']}) | TP1: {pr['TP1']}"
                     )
                 ok, r_msg = send_telegram_message(tg_token, tg_chat_id, "\n".join(lines))
                 if ok:
@@ -2137,7 +2228,12 @@ else:
         with fc6:
             in_tp2 = st.number_input("الهدف الثاني TP2 (0 = آلي)", min_value=0.0, value=0.0, step=0.1)
 
-        submitted = st.form_submit_button("💾 حفظ السهم في محفظتي وتفعيل التنبيهات", type="primary", use_container_width=True)
+        in_trailing = st.checkbox(
+            "🛡️ تفعيل الوقف المتحرك الآلي (تأمين التعادل شامل العمولة عند TP1 وملاحقة الربح بعد TP2)",
+            value=True
+        )
+
+        submitted = st.form_submit_button("💾 حفظ السهم في محفظتي وتفعيل الحماية", type="primary", use_container_width=True)
         if submitted:
             clean_in = re.sub(r"[^A-Z0-9]", "", in_sym_raw.upper().replace(".CA", ""))
             if not clean_in:
@@ -2149,7 +2245,9 @@ else:
                     "buy_price": float(in_buy),
                     "stop_loss": float(in_sl),
                     "tp1": float(in_tp1),
-                    "tp2": float(in_tp2)
+                    "tp2": float(in_tp2),
+                    "trailing_enabled": bool(in_trailing),
+                    "trailing_stage": 0,
                 })
                 st.session_state["last_port_msg"] = f"✅ تم حفظ سهم ({clean_in}) بنجاح ({save_status})!"
                 st.rerun()
@@ -2159,9 +2257,9 @@ else:
     else:
         st.markdown(f"#### 📋 جدول متابعة أسهم المحفظة ({len(portfolio_rows)} أسهم)")
         p_cols = [
-            "الرمز", "الرأي اللحظي", "حالة التنبيه", "السكور الفني", "الكمية", "متوسط الشراء",
-            "السعر الحالي", "تغير اليوم %", "صافي الربح/الخسارة", "العائد %",
-            "وقف الخسارة", "بُعد الوقف %", "TP1", "بُعد TP1 %", "TP2", "TradingView"
+            "الرمز", "الرأي اللحظي", "حالة التنبيه", "الوقف المتحرك", "السكور الفني", "الكمية",
+            "متوسط الشراء", "السعر الحالي", "صافي الربح/الخسارة", "العائد %",
+            "وقف الخسارة", "بُعد الوقف %", "TP1", "TP2", "TradingView"
         ]
         st.dataframe(
             pd.DataFrame(portfolio_rows)[p_cols],
@@ -2174,22 +2272,44 @@ else:
         )
 
         st.divider()
-        p_sel_col, p_del_col = st.columns([2, 1])
+        p_sel_col, p_be_col, p_del_col = st.columns([1.8, 1.1, 1])
         with p_sel_col:
             port_selected_sym = st.selectbox(
                 "🔍 اختر سهماً من محفظتك لعرض الشارت ومقياس الهدف والوقف:",
                 options=[r["الرمز"] for r in portfolio_rows],
                 key="port_stock_select"
             )
+        p_item = next(r for r in portfolio_rows if r["الرمز"] == port_selected_sym)
+
+        with p_be_col:
+            st.write("")
+            st.write("")
+            if st.button(f"🛡️ تأمين {port_selected_sym} للتعادل الآن", use_container_width=True, help="يرفع وقف الخسارة لسعر الشراء + العمولات"):
+                be_val = round(p_item["متوسط الشراء"] * (1.0 + fee_rate * 2.0), 2)
+                if p_item["السعر الحالي"] <= be_val:
+                    st.warning(f"⚠️ السعر الحالي ({p_item['السعر الحالي']}) أقل من أو يساوي نقطة التعادل ({be_val}).")
+                else:
+                    _, st_be = upsert_portfolio_item({
+                        "symbol": port_selected_sym,
+                        "shares": p_item["الكمية"],
+                        "buy_price": p_item["متوسط الشراء"],
+                        "stop_loss": be_val,
+                        "tp1": p_item["TP1"],
+                        "tp2": p_item["TP2"],
+                        "trailing_enabled": p_item["trailing_enabled"],
+                        "trailing_stage": max(1, p_item["trailing_stage"]),
+                    })
+                    st.session_state["last_port_msg"] = f"🛡️ تم رفع وقف {port_selected_sym} لنقطة التعادل ({be_val} ج.م) ({st_be})."
+                    st.rerun()
+
         with p_del_col:
             st.write("")
             st.write("")
-            if st.button(f"🗑️ حذف {port_selected_sym} من المحفظة", use_container_width=True):
+            if st.button(f"🗑️ حذف {port_selected_sym}", use_container_width=True):
                 _, del_status = delete_portfolio_item(port_selected_sym)
                 st.session_state["last_port_msg"] = f"🗑️ تم حذف سهم ({port_selected_sym}) ({del_status})."
                 st.rerun()
 
-        p_item = next(r for r in portfolio_rows if r["الرمز"] == port_selected_sym)
         p_sinfo = p_item["stock_info"]
 
         pc_chart, pc_info = st.columns([2.1, 1])
@@ -2230,7 +2350,7 @@ else:
             <div class="pro-card">
                 <h4 class="txt-cyan" style="margin-top:0;">💼 بطاقة السهم: {port_selected_sym}</h4>
                 <p><span class="{flow_obj.get('badge_cls', 'badge-warn')}">{flow_obj.get('verdict', p_item['الرأي اللحظي'])}</span></p>
-                <p><span class="badge-bull">{p_item['حالة التنبيه']}</span></p>
+                <p><span class="badge-bull">{p_item['حالة التنبيه']}</span> &nbsp; <span class="badge-warn">{p_item['الوقف المتحرك']}</span></p>
                 <p class="txt-white"><b>السكور الفني:</b> {p_item['السكور الفني']}/100 | <b>VWAP:</b> {flow_obj.get('vwap', p_item['السعر الحالي'])}</p>
                 <hr style="border-color:#26334D;">
                 <p class="txt-white"><b>الكمية:</b> {p_item['الكمية']:,} سهم | <b>متوسط الشراء:</b> {p_item['متوسط الشراء']} ج.م</p>
