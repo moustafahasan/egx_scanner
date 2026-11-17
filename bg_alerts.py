@@ -1,6 +1,6 @@
 import os
+import re
 import json
-import math
 import urllib.request
 import urllib.parse
 from datetime import datetime, timezone, timedelta
@@ -25,7 +25,7 @@ def is_egx_market_open(now_dt: datetime) -> bool:
     if now_dt.weekday() not in [6, 0, 1, 2, 3]:
         return False
     mins = now_dt.hour * 60 + now_dt.minute
-    return (9 * 60 + 55) <= mins <= (14 * 60 + 40)
+    return (9 * 60 + 55) <= mins <= (14 * 60 + 55)
 
 
 def sb_request(method: str, endpoint: str, payload=None, extra_headers: dict = None):
@@ -68,15 +68,29 @@ def send_telegram(text_html: str) -> bool:
         return False
 
 
+def log_alert_once(alert_key: str, sent_time: str, sent_keys: set):
+    sent_keys.add(alert_key)
+    sb_request(
+        "POST",
+        "egx_alerts_log?on_conflict=alert_key",
+        payload={"alert_key": alert_key, "sent_time": sent_time},
+        extra_headers={"Prefer": "resolution=merge-duplicates,return=minimal"}
+    )
+
+
 def fetch_tv_quotes() -> dict:
     url = "https://scanner.tradingview.com/egypt/scan"
-    cols = ["name", "close", "change", "volume", "ATR", "EMA20", "VWAP"]
+    cols = [
+        "name", "close", "change", "high", "low", "volume",
+        "average_volume_10d_calc", "ATR", "EMA20", "EMA50", "EMA200", "VWAP"
+    ]
     payload = json.dumps({
         "filter": [{"left": "type", "operation": "in_range", "right": ["stock", "dr", "fund"]}],
         "options": {"lang": "en"},
         "markets": ["egypt"],
         "symbols": {"query": {"types": []}, "tickers": []},
         "columns": cols,
+        "sort": {"sortBy": "volume", "sortOrder": "desc"},
         "range": [0, 500]
     }).encode("utf-8")
     quotes = {}
@@ -93,20 +107,46 @@ def fetch_tv_quotes() -> dict:
                 if ":" not in full_s or len(d) < 2:
                     continue
                 sym = full_s.split(":")[1].strip().upper()
+                if not re.match(r"^[A-Z0-9]{2,12}$", sym):
+                    continue
                 close_v = float(d[1] or 0.0)
                 if close_v <= 0:
                     continue
                 quotes[sym] = {
                     "close": close_v,
                     "change": float(d[2] or 0.0),
-                    "volume": float(d[3] or 0.0),
-                    "atr": float(d[4] or (close_v * 0.025)),
-                    "ema20": float(d[5] or close_v),
-                    "vwap": float(d[6] or close_v),
+                    "high": float(d[3] or close_v),
+                    "low": float(d[4] or close_v),
+                    "volume": float(d[5] or 0.0),
+                    "avg_vol10": float(d[6] or 0.0),
+                    "atr": float(d[7] or (close_v * 0.025)),
+                    "ema20": float(d[8] or close_v),
+                    "ema50": float(d[9] or close_v),
+                    "ema200": float(d[10] or 0.0),
+                    "vwap": float(d[11] or close_v),
                 }
     except Exception as e:
         print(f"TV fetch error: {e}")
     return quotes
+
+
+def get_top_morning_radar(quotes: dict, elapsed_mins: int) -> list:
+    progress = max(0.05, min(1.0, float(elapsed_mins) / 270.0))
+    ranked = []
+    for sym, q in quotes.items():
+        close = q["close"]
+        vol = q["volume"]
+        avg_v = q["avg_vol10"]
+        vwap = q["vwap"] if q["vwap"] > 0 else close
+        turnover_m = (vol * vwap) / 1_000_000.0
+        if turnover_m < 0.3 or q["change"] >= 19.0 or avg_v <= 0:
+            continue
+        rvol = vol / max(1.0, avg_v * progress)
+        if rvol >= 1.35 and close > vwap and q["change"] > 0.3:
+            pts = min(100, int(round(rvol * 25 + q["change"] * 4 + (15 if close > q["ema50"] else 0))))
+            ranked.append((pts, rvol, sym, q))
+    ranked.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    return ranked[:3]
 
 
 def run():
@@ -115,17 +155,11 @@ def run():
         print(f"[{now_dt.strftime('%H:%M')}] Market closed. Skipping.")
         return
 
-    ok_p, portfolio = sb_request(
-        "GET",
-        "egx_portfolio?select=symbol,shares,buy_price,stop_loss,tp1,tp2,trailing_enabled,trailing_stage"
-    )
-    if not ok_p:
-        ok_p, portfolio = sb_request("GET", "egx_portfolio?select=symbol,shares,buy_price,stop_loss,tp1,tp2")
-    if not ok_p or not portfolio:
-        print("No portfolio items found or Supabase error.")
-        return
-
     today_str = now_dt.strftime("%Y-%m-%d")
+    time_str = now_dt.strftime("%H:%M")
+    mins_now = now_dt.hour * 60 + now_dt.minute
+    elapsed_mins = max(10, mins_now - (10 * 60))
+
     q_prefix = urllib.parse.quote(f"{today_str}%")
     ok_l, logs_raw = sb_request("GET", f"egx_alerts_log?select=alert_key&alert_key=like.{q_prefix}")
     sent_keys = {r["alert_key"] for r in logs_raw} if (ok_l and isinstance(logs_raw, list)) else set()
@@ -133,6 +167,38 @@ def run():
     quotes = fetch_tv_quotes()
     if not quotes:
         return
+
+    # 1. ملخص افتتاح الجلسة (10:15 - 10:35 صباحاً)
+    if (10 * 60 + 15) <= mins_now <= (10 * 60 + 35):
+        morning_key = f"{today_str}_MORNING_RADAR"
+        if morning_key not in sent_keys:
+            top3 = get_top_morning_radar(quotes, elapsed_mins)
+            if top3:
+                m_lines = [f"☀️ <b>رادار افتتاح الجلسة ({time_str}) — أقوى تدفقات السيولة</b>", ""]
+                for idx, (pts, rvol, sym, q) in enumerate(top3, 1):
+                    sl_est = round(max(0.01, q["close"] - 2.0 * q["atr"]), 2)
+                    tp1_est = round(q["close"] + 1.618 * (q["close"] - sl_est), 2)
+                    m_lines.append(
+                        f"{idx}. <b>{sym}</b> | السعر: <b>{q['close']}</b> ({q['change']:+.1f}%) | "
+                        f"سيولة: <b>{rvol:.1f}x</b> | SL: {sl_est} | TP1: {tp1_est}"
+                    )
+                if send_telegram("\n".join(m_lines)):
+                    log_alert_once(morning_key, time_str, sent_keys)
+
+    # 2. قراءة المحفظة السحابية ومراقبة الوقف المتحرك والأهداف
+    ok_p, portfolio = sb_request(
+        "GET",
+        "egx_portfolio?select=symbol,shares,buy_price,stop_loss,tp1,tp2,trailing_enabled,trailing_stage"
+    )
+    if not ok_p:
+        ok_p, portfolio = sb_request("GET", "egx_portfolio?select=symbol,shares,buy_price,stop_loss,tp1,tp2")
+    if not ok_p or not portfolio:
+        print("No portfolio items found.")
+        return
+
+    total_cost = 0.0
+    total_val = 0.0
+    eod_lines = []
 
     for item in portfolio:
         sym = str(item.get("symbol", "")).upper().replace(".CA", "").strip()
@@ -156,7 +222,7 @@ def run():
         trailing_on = bool(item.get("trailing_enabled", True))
         trailing_stage = int(item.get("trailing_stage", 0))
 
-        # 1. منطق الوقف المتحرك الآلي (Smart Trailing Stop)
+        # الوقف المتحرك الآلي
         if trailing_on:
             be_price = round(buy_p * (1.0 + FEE_RATE * 2.0), 2)
             if curr_p >= tp1 and trailing_stage < 1 and be_price < curr_p:
@@ -176,8 +242,7 @@ def run():
                         f"تم رفع وقف الخسارة تلقائياً إلى نقطة التعادل: <b>{new_sl} ج.م</b>."
                     )
                     if send_telegram(msg):
-                        sb_request("POST", "egx_alerts_log", payload={"alert_key": tr_key, "sent_time": now_dt.strftime("%H:%M")})
-                        sent_keys.add(tr_key)
+                        log_alert_once(tr_key, time_str, sent_keys)
 
             if curr_p >= tp2:
                 anchor = max(vwap, ema20)
@@ -197,12 +262,19 @@ def run():
                             f"تم رفع وقف حماية الأرباح الجديد إلى: <b>{cand_sl} ج.م</b>."
                         )
                         if send_telegram(msg):
-                            sb_request("POST", "egx_alerts_log", payload={"alert_key": tr2_key, "sent_time": now_dt.strftime("%H:%M")})
-                            sent_keys.add(tr2_key)
+                            log_alert_once(tr2_key, time_str, sent_keys)
 
-        # 2. تنبيهات الوقف والأهداف القياسية
-        net_pnl = (shares * (curr_p - buy_p)) - (shares * curr_p * FEE_RATE)
-        net_pct = ((curr_p - buy_p) / buy_p) * 100.0
+        cost_v = shares * buy_p
+        mkt_v = shares * curr_p
+        net_pnl = (mkt_v - cost_v) - (mkt_v * FEE_RATE)
+        net_pct = (net_pnl / cost_v) * 100.0
+        total_cost += cost_v
+        total_val += mkt_v
+
+        eod_lines.append(
+            f"• <b>{sym}</b>: {curr_p} ({q['change']:+.1f}% اليوم) | صافي: <b>{net_pnl:+,.0f} ({net_pct:+.1f}%)</b> | SL: {sl}"
+        )
+
         dist_sl = ((curr_p - sl) / curr_p) * 100.0
         dist_tp1 = ((tp1 - curr_p) / curr_p) * 100.0
 
@@ -228,8 +300,21 @@ def run():
             dedup_key = f"{today_str}_{sym}_{alert_code}"
             if dedup_key not in sent_keys:
                 if send_telegram(msg_body):
-                    sb_request("POST", "egx_alerts_log", payload={"alert_key": dedup_key, "sent_time": now_dt.strftime("%H:%M")})
-                    sent_keys.add(dedup_key)
+                    log_alert_once(dedup_key, time_str, sent_keys)
+
+    # 3. تقرير إغلاق الجلسة اليومي (02:32 - 02:50 ظهراً)
+    if (14 * 60 + 32) <= mins_now <= (14 * 60 + 50) and eod_lines:
+        eod_key = f"{today_str}_EOD_REPORT"
+        if eod_key not in sent_keys:
+            tot_net = (total_val - total_cost) - (total_val * FEE_RATE)
+            tot_pct = ((tot_net / total_cost) * 100.0) if total_cost > 0 else 0.0
+            header = [
+                f"🌙 <b>التقرير الختامي لمحفظتك ({today_str})</b>",
+                f"القيمة الحالية: <b>{total_val:,.0f} ج.م</b> | الصافي: <b>{tot_net:+,.0f} ج.م ({tot_pct:+.1f}%)</b>",
+                ""
+            ]
+            if send_telegram("\n".join(header + eod_lines)):
+                log_alert_once(eod_key, time_str, sent_keys)
 
 
 if __name__ == "__main__":
