@@ -7,6 +7,7 @@ import urllib.request
 import urllib.parse
 import xml.etree.ElementTree as ET
 from datetime import datetime, date, timedelta, timezone
+from thndr_parser import parse_thndr_files
 
 import streamlit as st
 import pandas as pd
