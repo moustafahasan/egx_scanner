@@ -2,17 +2,12 @@ name: EGX Portfolio Background Alerts
 
 on:
   schedule:
-    # يعمل كل 15 دقيقة من الأحد إلى الخميس (تغطي 10:00 ص إلى 2:30 م بتوقيت القاهرة صيفاً وشتاءً)
     - cron: '*/15 7-13 * * 0-4'
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
-  check-portfolio-alerts:
+  check-alerts:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -22,24 +17,10 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install yfinance pandas numpy
-
-      - name: Run EGX background alerts
-       env:
+      - name: Run background alerts
+        env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          FEE_RATE: "0.0016"
-          ALERT_BUFFER_PCT: "2.5"
         run: python bg_alerts.py
-
-      - name: Save sent alerts log to avoid duplicates
-        run: |
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
-          git add tg_alerts_log.json
-          git diff --staged --quiet || (git commit -m "Update sent alerts log" && git push)
