@@ -36,7 +36,7 @@ from datetime import datetime, timezone, timedelta, date
 # إعدادات الصفحة والتصميم البصري عالي التباين
 # ==========================================
 st.set_page_config(
-    page_title="EGX Whale Hunter Pro V8.0",
+    page_title="EGX Whale Hunter Pro V8.5",
     page_icon="🦅",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -297,6 +297,7 @@ def get_secret_safe(key_name: str) -> str:
 # محرك المزامنة السحابية (Supabase REST API + نسخة محلية احتياطية)
 # ==========================================
 PORTFOLIO_FILE = "my_egx_portfolio.json"
+TRADES_FILE = "my_egx_trades_history.json"
 TG_LOG_FILE = "tg_alerts_log.json"
 
 def get_supabase_creds() -> tuple:
@@ -481,6 +482,80 @@ def sync_full_portfolio_to_cloud(portfolio_list: list) -> tuple:
         _save_local_portfolio_cache(records)
         return True, f"✅ تمت مزامنة {len(records)} أسهم إلى السحابة بنجاح!"
     return False, f"❌ فشلت المزامنة: {err}"
+
+# ==========================================
+# سجل الصفقات المغلقة (Closed Trades Journal)
+# ==========================================
+def load_closed_trades(force_refresh: bool = False) -> list:
+    if not force_refresh and "closed_trades_list" in st.session_state:
+        return st.session_state["closed_trades_list"]
+
+    trades = []
+    sb_url, sb_key = get_supabase_creds()
+    if sb_url and sb_key:
+        ok, res = _sb_request(
+            "GET",
+            "egx_trades_history?select=symbol,shares,buy_price,sell_price,net_pnl,pnl_pct,closed_at&order=closed_at.desc&limit=100"
+        )
+        if ok and isinstance(res, list):
+            trades = res
+            st.session_state["closed_trades_list"] = trades
+            try:
+                with open(TRADES_FILE, "w", encoding="utf-8") as f:
+                    json.dump(trades, f, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
+            return trades
+
+    if os.path.exists(TRADES_FILE):
+        try:
+            with open(TRADES_FILE, "r", encoding="utf-8") as f:
+                local_t = json.load(f)
+                if isinstance(local_t, list):
+                    trades = local_t
+        except Exception:
+            pass
+    st.session_state["closed_trades_list"] = trades
+    return trades
+
+def record_closed_trade(symbol: str, shares: int, buy_price: float, sell_price: float, fee_rate: float) -> tuple:
+    cost = shares * buy_price
+    proceeds = shares * sell_price
+    fees = (cost + proceeds) * fee_rate
+    net_pnl = round((proceeds - cost) - fees, 2)
+    pnl_pct = round((net_pnl / max(0.01, cost)) * 100.0, 2)
+    now_iso = get_cairo_now().isoformat()
+
+    trade_rec = {
+        "symbol": symbol,
+        "shares": int(shares),
+        "buy_price": float(buy_price),
+        "sell_price": float(sell_price),
+        "net_pnl": net_pnl,
+        "pnl_pct": pnl_pct,
+        "closed_at": now_iso,
+    }
+
+    existing = load_closed_trades(force_refresh=False)
+    updated_list = [trade_rec] + existing
+    st.session_state["closed_trades_list"] = updated_list
+    try:
+        with open(TRADES_FILE, "w", encoding="utf-8") as f:
+            json.dump(updated_list, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+    sb_url, sb_key = get_supabase_creds()
+    if sb_url and sb_key:
+        _sb_request(
+            "POST",
+            "egx_trades_history",
+            payload=trade_rec,
+            extra_headers={"Prefer": "return=minimal"}
+        )
+
+    delete_portfolio_item(symbol)
+    return net_pnl, pnl_pct
 
 # ==========================================
 # سجل إشعارات التليجرام السحابي
@@ -1675,6 +1750,7 @@ def fetch_stock_news(symbol_clean: str) -> list:
 # ==========================================
 force_sync = st.session_state.pop("force_cloud_sync", False)
 my_portfolio, cloud_connected = load_portfolio(force_cloud_refresh=force_sync)
+closed_trades = load_closed_trades(force_refresh=force_sync)
 portfolio_clean_syms = [
     item["symbol"].upper().replace(".CA", "").strip()
     for item in my_portfolio if item.get("symbol")
@@ -1751,7 +1827,7 @@ with st.sidebar:
         ok, res_msg = send_telegram_message(
             tg_token,
             tg_chat_id,
-            "🦅 <b>EGX Whale Hunter Pro V8.0</b>\n✅ تفعيل الوقف المتحرك الآلي والمزامنة السحابية بنجاح!"
+            "🦅 <b>EGX Whale Hunter Pro V8.5</b>\n✅ النظام السحابي وسجل الصفقات وتنبيهات الخلفية تعمل بنجاح!"
         )
         if ok:
             st.success("✅ وصلت الرسالة التجريبية لتليجرام!")
@@ -1796,12 +1872,12 @@ with st.sidebar:
 # البانر الافتتاحي المضيء (Hero Banner)
 # ==========================================
 tg_status_txt = "📲 تليجرام متصل" if (tg_token and tg_chat_id) else "📴 تليجرام غير مربوط"
-cloud_status_txt = "☁️ سحابة Supabase متصلة" if cloud_connected else "💾 حفظ محلي (أدخل مفاتيح السحابة)"
+cloud_status_txt = "☁️ سحابة Supabase متصلة" if cloud_connected else "💾 حفظ محلي"
 
 st.markdown(f"""
 <div class="hero-banner">
     <div>
-        <div class="hero-title">🦅 <span class="hero-accent">EGX WHALE HUNTER</span> PRO <span style="font-size:13px;color:#FACC15;">V8.0</span></div>
+        <div class="hero-title">🦅 <span class="hero-accent">EGX WHALE HUNTER</span> PRO <span style="font-size:13px;color:#FACC15;">V8.5</span></div>
         <div class="hero-sub">🌐 تغطية كاملة ({len(raw_egx_tv_map)} سهم) • {cloud_status_txt} • 💼 محفظتي ({len(portfolio_clean_syms)}) • {tg_status_txt}</div>
     </div>
     <div class="session-pill">{session_info['badge']}</div>
@@ -1879,12 +1955,13 @@ scanner_results.sort(
 filtered_results = [r for r in scanner_results if r["السكور"] >= min_score]
 
 # ==========================================
-# معالجة محفظتي + محرك الوقف المتحرك الآلي (Smart Trailing Stop)
+# معالجة محفظتي + محرك الوقف المتحرك الآلي
 # ==========================================
 portfolio_rows = []
 active_alerts = []
 total_port_cost = 0.0
 total_port_val = 0.0
+total_open_risk = 0.0
 
 today_str = get_cairo_now().strftime("%Y-%m-%d")
 sent_tg_log = load_sent_tg_log(today_str, force_refresh=force_sync)
@@ -1914,7 +1991,6 @@ for item in my_portfolio:
     tp1 = user_tp1 if user_tp1 > 0 else round(buy_p + 1.618 * risk_unit, 2)
     tp2 = user_tp2 if user_tp2 > 0 else round(buy_p + 2.618 * risk_unit, 2)
 
-    # تنفيذ الوقف المتحرك الآلي (Smart Trailing Stop)
     sl_updated = False
     if trailing_on:
         be_price = round(buy_p * (1.0 + fee_rate * 2.0), 2)
@@ -1976,9 +2052,11 @@ for item in my_portfolio:
     fees_est = mkt_val * fee_rate
     net_pnl = (mkt_val - cost_val) - fees_est
     net_pnl_pct = (net_pnl / cost_val) * 100
+    pos_risk = max(0.0, shares * (curr_p - sl))
 
     total_port_cost += cost_val
     total_port_val += mkt_val
+    total_open_risk += pos_risk
 
     dist_sl_pct = ((curr_p - sl) / curr_p) * 100
     dist_tp1_pct = ((tp1 - curr_p) / curr_p) * 100
@@ -2088,7 +2166,7 @@ main_view = st.radio(
     "🧭 اختر القسم:",
     options=[
         f"🎯 رادار صفقات السوق والسيولة الحية ({len(filtered_results)})",
-        f"💼 محفظتي الشخصية والتنبيهات ({len(portfolio_rows)})"
+        f"💼 محفظتي الشخصية وسجل الصفقات ({len(portfolio_rows)})"
     ],
     horizontal=True,
     label_visibility="collapsed"
@@ -2162,13 +2240,10 @@ if "رادار" in main_view:
         st.warning("⚠️ لا توجد أسهم تطابق شروط السكانر الحالية. افتح القائمة الجانبية (>) لتقليل الحد الأدنى للسكور أو السيولة الفعلية.")
 
 # ==============================================================================
-# القسم الثاني: محفظتي الشخصية وإضافة الأسهم والوقف المتحرك
+# القسم الثاني: محفظتي الشخصية وسجل الصفقات المغلقة
 # ==============================================================================
 else:
     st.markdown("### 💼 محفظتي الشخصية وإدارة المخاطر الآلية")
-
-    if not cloud_connected:
-        st.info("💡 **نصيحة:** أدخل `SUPABASE_URL` و `SUPABASE_KEY` في القائمة الجانبية (أو في Streamlit Secrets) لضمان حفظ محفظتك سحابياً.")
 
     if st.session_state.get("last_port_msg"):
         st.success(st.session_state["last_port_msg"])
@@ -2176,12 +2251,13 @@ else:
     total_net_pnl = total_port_val - total_port_cost - (total_port_val * fee_rate)
     total_pnl_pct = ((total_net_pnl / total_port_cost) * 100) if total_port_cost > 0 else 0.0
     pnl_cls = "txt-green" if total_net_pnl >= 0 else "txt-red"
+    open_risk_pct = (total_open_risk / max(1.0, total_port_val)) * 100.0 if total_port_val > 0 else 0.0
 
     pk1, pk2, pk3, pk4 = st.columns(4)
     pk1.markdown(f'<div class="kpi-card"><div class="kpi-label">💵 إجمالي التكلفة</div><div class="kpi-val">{total_port_cost:,.0f} ج.م</div></div>', unsafe_allow_html=True)
     pk2.markdown(f'<div class="kpi-card"><div class="kpi-label">💰 القيمة الحالية</div><div class="kpi-val txt-cyan">{total_port_val:,.0f} ج.م</div></div>', unsafe_allow_html=True)
     pk3.markdown(f'<div class="kpi-card"><div class="kpi-label">📈 صافي الربح/الخسارة</div><div class="kpi-val {pnl_cls}">{total_net_pnl:+,.0f} ({total_pnl_pct:+.1f}%)</div></div>', unsafe_allow_html=True)
-    pk4.markdown(f'<div class="kpi-card" style="border-top-color:#FACC15;"><div class="kpi-label">🔔 تنبيهات نشطة</div><div class="kpi-val txt-gold">{len(active_alerts)}</div></div>', unsafe_allow_html=True)
+    pk4.markdown(f'<div class="kpi-card" style="border-top-color:#FACC15;"><div class="kpi-label">🛡️ المخاطرة المفتوحة</div><div class="kpi-val txt-gold">{total_open_risk:,.0f} ({open_risk_pct:.1f}%)</div></div>', unsafe_allow_html=True)
 
     st.write("")
 
@@ -2191,7 +2267,7 @@ else:
                 st.warning("⚠️ افتح القائمة الجانبية (>) وأدخل Bot Token و Chat ID أولاً.")
             else:
                 lines = [
-                    f"📊 <b>تقرير محفظتك ونبض التدفق اللحظي</b>",
+                    "📊 <b>تقرير محفظتك ونبض التدفق اللحظي</b>",
                     f"القيمة: <b>{total_port_val:,.0f} ج.م</b> | الصافي: <b>{total_net_pnl:+,.0f} ج.م ({total_pnl_pct:+.1f}%)</b>",
                     ""
                 ]
@@ -2275,7 +2351,7 @@ else:
         p_sel_col, p_be_col, p_del_col = st.columns([1.8, 1.1, 1])
         with p_sel_col:
             port_selected_sym = st.selectbox(
-                "🔍 اختر سهماً من محفظتك لعرض الشارت ومقياس الهدف والوقف:",
+                "🔍 اختر سهماً من محفظتك للتحكم والشارت:",
                 options=[r["الرمز"] for r in portfolio_rows],
                 key="port_stock_select"
             )
@@ -2305,9 +2381,33 @@ else:
         with p_del_col:
             st.write("")
             st.write("")
-            if st.button(f"🗑️ حذف {port_selected_sym}", use_container_width=True):
+            if st.button(f"🗑️ حذف {port_selected_sym} (بدون تسجيل)", use_container_width=True):
                 _, del_status = delete_portfolio_item(port_selected_sym)
                 st.session_state["last_port_msg"] = f"🗑️ تم حذف سهم ({port_selected_sym}) ({del_status})."
+                st.rerun()
+
+        # شريط إغلاق الصفقة الفعلي وتسجيلها في دفتر الأداء
+        cl_c1, cl_c2 = st.columns([1.4, 1.6])
+        with cl_c1:
+            actual_exit_price = st.number_input(
+                f"💵 سعر البيع الفعلي لإغلاق صفقة {port_selected_sym} (ج.م):",
+                min_value=0.01,
+                value=float(p_item["السعر الحالي"]),
+                step=0.05,
+                key=f"exit_p_{port_selected_sym}"
+            )
+        with cl_c2:
+            st.write("")
+            st.write("")
+            if st.button(f"💰 إغلاق صفقة {port_selected_sym} وتسجيل الربح/الخسارة في السجل", type="primary", use_container_width=True):
+                net_res, pct_res = record_closed_trade(
+                    symbol=port_selected_sym,
+                    shares=p_item["الكمية"],
+                    buy_price=p_item["متوسط الشراء"],
+                    sell_price=actual_exit_price,
+                    fee_rate=fee_rate
+                )
+                st.session_state["last_port_msg"] = f"✅ تم إغلاق صفقة ({port_selected_sym}) بسعر {actual_exit_price} ج.م وتسجيل صافي {net_res:+,.0f} ج.م ({pct_res:+.1f}%)!"
                 st.rerun()
 
         p_sinfo = p_item["stock_info"]
@@ -2366,6 +2466,43 @@ else:
             st.caption("📍 مقياس موقع السعر بين الوقف (0%) والهدف الأول (100%):")
             st.progress(p_item["progress_ratio"])
             st.link_button("🚀 افتح السهم على TradingView ↗", p_item["TradingView"], use_container_width=True)
+
+    # ==========================================
+    # سجل الصفقات المغلقة وإحصائيات الأداء (Closed Trades Analytics)
+    # ==========================================
+    st.divider()
+    st.markdown("### 📜 سجل الصفقات المغلقة وإحصائيات الأداء الفعلي")
+    if not closed_trades:
+        st.info("📘 لا توجد صفقات مغلقة مسجلة بعد. عند بيع أي سهم من محفظتك باستخدام زر **إغلاق صفقة وتسجيل الربح/الخسارة**، سيظهر هنا مع حساب نسبة النجاح ومعامل الربح تلقائياً.")
+    else:
+        wins = [t for t in closed_trades if float(t.get("net_pnl", 0)) > 0]
+        losses = [t for t in closed_trades if float(t.get("net_pnl", 0)) <= 0]
+        win_rate = (len(wins) / len(closed_trades)) * 100.0
+        gross_wins = sum(float(t.get("net_pnl", 0)) for t in wins)
+        gross_losses = abs(sum(float(t.get("net_pnl", 0)) for t in losses))
+        profit_factor = (gross_wins / gross_losses) if gross_losses > 0 else (99.9 if gross_wins > 0 else 0.0)
+        realized_total = sum(float(t.get("net_pnl", 0)) for t in closed_trades)
+        realized_cls = "txt-green" if realized_total >= 0 else "txt-red"
+
+        tk1, tk2, tk3, tk4 = st.columns(4)
+        tk1.markdown(f'<div class="kpi-card"><div class="kpi-label">📊 إجمالي الصفقات</div><div class="kpi-val">{len(closed_trades)} صفقة</div></div>', unsafe_allow_html=True)
+        tk2.markdown(f'<div class="kpi-card"><div class="kpi-label">🎯 نسبة النجاح (Win Rate)</div><div class="kpi-val txt-cyan">{win_rate:.1f}%</div></div>', unsafe_allow_html=True)
+        tk3.markdown(f'<div class="kpi-card"><div class="kpi-label">⚖️ معامل الربح (Profit Factor)</div><div class="kpi-val txt-gold">{profit_factor:.2f}x</div></div>', unsafe_allow_html=True)
+        tk4.markdown(f'<div class="kpi-card"><div class="kpi-label">💰 صافي الأرباح المحققة</div><div class="kpi-val {realized_cls}">{realized_total:+,.0f} ج.م</div></div>', unsafe_allow_html=True)
+
+        st.write("")
+        hist_rows = []
+        for t in closed_trades:
+            hist_rows.append({
+                "الرمز": t.get("symbol", ""),
+                "الكمية": int(t.get("shares", 0)),
+                "سعر الشراء": round(float(t.get("buy_price", 0)), 2),
+                "سعر البيع": round(float(t.get("sell_price", 0)), 2),
+                "صافي الربح/الخسارة": round(float(t.get("net_pnl", 0)), 0),
+                "العائد %": round(float(t.get("pnl_pct", 0)), 2),
+                "تاريخ الإغلاق": str(t.get("closed_at", ""))[:16].replace("T", " "),
+            })
+        st.dataframe(pd.DataFrame(hist_rows), use_container_width=True, hide_index=True)
 
     with st.expander("💾 حفظ / استعادة نسخة احتياطية من المحفظة (Backup)"):
         b_col1, b_col2 = st.columns(2)
