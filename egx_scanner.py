@@ -36,7 +36,7 @@ from datetime import datetime, timezone, timedelta, date
 # إعدادات الصفحة والتصميم البصري عالي التباين
 # ==========================================
 st.set_page_config(
-    page_title="EGX Whale Hunter Pro V7.8",
+    page_title="EGX Whale Hunter Pro V7.9",
     page_icon="🦅",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -284,6 +284,225 @@ def _safe_f(arr, idx: int, default: float = 0.0) -> float:
         except Exception:
             return default
     return default
+
+def get_secret_safe(key_name: str) -> str:
+    try:
+        val = st.secrets.get(key_name, "")
+        if val:
+            return str(val).strip()
+    except Exception:
+        pass
+    return str(os.environ.get(key_name, "")).strip()
+
+# ==========================================
+# محرك المزامنة السحابية (Supabase REST API + نسخة محلية احتياطية)
+# ==========================================
+PORTFOLIO_FILE = "my_egx_portfolio.json"
+TG_LOG_FILE = "tg_alerts_log.json"
+
+def get_supabase_creds() -> tuple:
+    url = st.session_state.get("sb_url_val", get_secret_safe("SUPABASE_URL")).strip().rstrip("/")
+    key = st.session_state.get("sb_key_val", get_secret_safe("SUPABASE_KEY")).strip()
+    return url, key
+
+def _sb_request(method: str, endpoint: str, payload=None, extra_headers: dict = None) -> tuple:
+    sb_url, sb_key = get_supabase_creds()
+    if not sb_url or not sb_key:
+        return False, "بيانات Supabase غير مُدخلة"
+    full_url = f"{sb_url}/rest/v1/{endpoint}"
+    headers = {
+        "apikey": sb_key,
+        "Authorization": f"Bearer {sb_key}",
+        "Content-Type": "application/json",
+    }
+    if extra_headers:
+        headers.update(extra_headers)
+    data_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else None
+    try:
+        req = urllib.request.Request(full_url, data=data_bytes, headers=headers, method=method)
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            raw = resp.read().decode("utf-8")
+            return True, (json.loads(raw) if raw else [])
+    except Exception as e:
+        return False, str(e)
+
+def test_supabase_connection() -> tuple:
+    ok, res = _sb_request("GET", "egx_portfolio?select=symbol&limit=1")
+    if ok:
+        return True, "✅ متصل بقاعدة بيانات Supabase السحابية بنجاح!"
+    return False, f"❌ تعذر الاتصال بـ Supabase: {res}"
+
+def _save_local_portfolio_cache(portfolio_list: list):
+    st.session_state["my_portfolio"] = portfolio_list
+    try:
+        with open(PORTFOLIO_FILE, "w", encoding="utf-8") as f:
+            json.dump(portfolio_list, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+def _load_local_portfolio_file() -> list:
+    if os.path.exists(PORTFOLIO_FILE):
+        try:
+            with open(PORTFOLIO_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    return data
+        except Exception:
+            pass
+    return []
+
+def load_portfolio(force_cloud_refresh: bool = False) -> tuple:
+    """إرجاع (قائمة المحفظة, حالة الاتصال السحابي)"""
+    sb_url, sb_key = get_supabase_creds()
+    has_creds = bool(sb_url and sb_key)
+
+    if not force_cloud_refresh and "my_portfolio" in st.session_state:
+        return st.session_state["my_portfolio"], st.session_state.get("cloud_sync_ok", False)
+
+    if has_creds:
+        ok, res = _sb_request("GET", "egx_portfolio?select=symbol,shares,buy_price,stop_loss,tp1,tp2&order=symbol.asc")
+        if ok and isinstance(res, list):
+            cleaned = []
+            for row in res:
+                sym = str(row.get("symbol", "")).upper().replace(".CA", "").strip()
+                if sym:
+                    cleaned.append({
+                        "symbol": sym,
+                        "shares": int(row.get("shares", 0)),
+                        "buy_price": float(row.get("buy_price", 0.0)),
+                        "stop_loss": float(row.get("stop_loss", 0.0)),
+                        "tp1": float(row.get("tp1", 0.0)),
+                        "tp2": float(row.get("tp2", 0.0)),
+                    })
+            st.session_state["cloud_sync_ok"] = True
+            _save_local_portfolio_cache(cleaned)
+            return cleaned, True
+
+    st.session_state["cloud_sync_ok"] = False
+    local_data = _load_local_portfolio_file()
+    st.session_state["my_portfolio"] = local_data
+    return local_data, False
+
+def upsert_portfolio_item(item: dict) -> tuple:
+    clean_sym = re.sub(r"[^A-Z0-9]", "", str(item["symbol"]).upper().replace(".CA", ""))
+    record = {
+        "symbol": clean_sym,
+        "shares": int(item.get("shares", 0)),
+        "buy_price": float(item.get("buy_price", 0.0)),
+        "stop_loss": float(item.get("stop_loss", 0.0)),
+        "tp1": float(item.get("tp1", 0.0)),
+        "tp2": float(item.get("tp2", 0.0)),
+    }
+
+    current_list = [p for p in st.session_state.get("my_portfolio", []) if p["symbol"].upper().replace(".CA", "").strip() != clean_sym]
+    current_list.append(record)
+    _save_local_portfolio_cache(current_list)
+
+    sb_url, sb_key = get_supabase_creds()
+    if sb_url and sb_key:
+        ok, err = _sb_request(
+            "POST",
+            "egx_portfolio?on_conflict=symbol",
+            payload=record,
+            extra_headers={"Prefer": "resolution=merge-duplicates,return=minimal"}
+        )
+        if ok:
+            st.session_state["cloud_sync_ok"] = True
+            return True, "☁️ محفوظ سحابياً"
+        return False, f"⚠️ حُفظ محلياً فقط (خطأ سحابي: {err})"
+    return True, "💾 محفوظ محلياً"
+
+def delete_portfolio_item(symbol: str) -> tuple:
+    clean_sym = re.sub(r"[^A-Z0-9]", "", str(symbol).upper().replace(".CA", ""))
+    current_list = [p for p in st.session_state.get("my_portfolio", []) if p["symbol"].upper().replace(".CA", "").strip() != clean_sym]
+    _save_local_portfolio_cache(current_list)
+
+    sb_url, sb_key = get_supabase_creds()
+    if sb_url and sb_key:
+        ok, err = _sb_request("DELETE", f"egx_portfolio?symbol=eq.{urllib.parse.quote(clean_sym)}")
+        if ok:
+            st.session_state["cloud_sync_ok"] = True
+            return True, "☁️ تم الحذف من السحابة"
+        return False, f"⚠️ حُذف محلياً فقط ({err})"
+    return True, "💾 تم الحذف محلياً"
+
+def sync_full_portfolio_to_cloud(portfolio_list: list) -> tuple:
+    sb_url, sb_key = get_supabase_creds()
+    if not sb_url or not sb_key:
+        return False, "أدخل بيانات Supabase أولاً"
+    records = []
+    for p in portfolio_list:
+        clean_sym = re.sub(r"[^A-Z0-9]", "", str(p.get("symbol", "")).upper().replace(".CA", ""))
+        if clean_sym and int(p.get("shares", 0)) > 0:
+            records.append({
+                "symbol": clean_sym,
+                "shares": int(p["shares"]),
+                "buy_price": float(p["buy_price"]),
+                "stop_loss": float(p.get("stop_loss", 0.0)),
+                "tp1": float(p.get("tp1", 0.0)),
+                "tp2": float(p.get("tp2", 0.0)),
+            })
+    if not records:
+        _save_local_portfolio_cache([])
+        return True, "المحفظة فارغة"
+    ok, err = _sb_request(
+        "POST",
+        "egx_portfolio?on_conflict=symbol",
+        payload=records,
+        extra_headers={"Prefer": "resolution=merge-duplicates,return=minimal"}
+    )
+    if ok:
+        st.session_state["cloud_sync_ok"] = True
+        _save_local_portfolio_cache(records)
+        return True, f"✅ تمت مزامنة {len(records)} أسهم إلى السحابة بنجاح!"
+    return False, f"❌ فشلت المزامنة: {err}"
+
+# ==========================================
+# سجل إشعارات التليجرام السحابي (منع التكرار حتى بعد إعادة التشغيل)
+# ==========================================
+def load_sent_tg_log(today_str: str, force_refresh: bool = False) -> dict:
+    if not force_refresh and "sent_tg_alerts" in st.session_state:
+        return st.session_state["sent_tg_alerts"]
+
+    log_map = {}
+    if os.path.exists(TG_LOG_FILE):
+        try:
+            with open(TG_LOG_FILE, "r", encoding="utf-8") as f:
+                local_d = json.load(f)
+                if isinstance(local_d, dict):
+                    log_map.update(local_d)
+        except Exception:
+            pass
+
+    sb_url, sb_key = get_supabase_creds()
+    if sb_url and sb_key:
+        q_prefix = urllib.parse.quote(f"{today_str}%")
+        ok, res = _sb_request("GET", f"egx_alerts_log?select=alert_key,sent_time&alert_key=like.{q_prefix}")
+        if ok and isinstance(res, list):
+            for row in res:
+                if row.get("alert_key"):
+                    log_map[row["alert_key"]] = row.get("sent_time", "")
+
+    st.session_state["sent_tg_alerts"] = log_map
+    return log_map
+
+def record_sent_tg_alert(alert_key: str, sent_time: str, current_log: dict):
+    current_log[alert_key] = sent_time
+    st.session_state["sent_tg_alerts"] = current_log
+    try:
+        with open(TG_LOG_FILE, "w", encoding="utf-8") as f:
+            json.dump(current_log, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+    sb_url, sb_key = get_supabase_creds()
+    if sb_url and sb_key:
+        _sb_request(
+            "POST",
+            "egx_alerts_log?on_conflict=alert_key",
+            payload={"alert_key": alert_key, "sent_time": sent_time},
+            extra_headers={"Prefer": "resolution=merge-duplicates,return=minimal"}
+        )
 
 # ==========================================
 # محرك موجات إليوت (ZigZag + قواعد إليوت + أهداف فيبوناتشي)
@@ -649,7 +868,6 @@ def analyze_intraday_flow(tv_q: dict, fallback_close: float = 0.0, session_progr
     vwap_diff_pct = ((close_p - vwap) / vwap * 100.0) if vwap > 0 else 0.0
     clv = ((close_p - low_p) / (high_p - low_p)) if (high_p > low_p) else 0.5
 
-    # تطبيع السيولة اللحظية حسب الوقت المنقضي من الجلسة
     expected_vol_now = max(1.0, avg_vol10 * max(0.04, session_progress)) if avg_vol10 > 0 else 0.0
     pace_rvol = (vol / expected_vol_now) if (expected_vol_now > 0 and vol > 0) else 0.0
 
@@ -754,39 +972,8 @@ def analyze_intraday_flow(tv_q: dict, fallback_close: float = 0.0, session_progr
     }
 
 # ==========================================
-# محرك إرسال تنبيهات التليجرام ومنع التكرار
+# محرك إرسال تنبيهات التليجرام
 # ==========================================
-TG_LOG_FILE = "tg_alerts_log.json"
-
-def get_secret_safe(key_name: str) -> str:
-    try:
-        return str(st.secrets.get(key_name, "")).strip()
-    except Exception:
-        return ""
-
-def load_sent_tg_log() -> dict:
-    if "sent_tg_alerts" in st.session_state:
-        return st.session_state["sent_tg_alerts"]
-    if os.path.exists(TG_LOG_FILE):
-        try:
-            with open(TG_LOG_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, dict):
-                    st.session_state["sent_tg_alerts"] = data
-                    return data
-        except Exception:
-            pass
-    st.session_state["sent_tg_alerts"] = {}
-    return {}
-
-def save_sent_tg_log(log_dict: dict):
-    st.session_state["sent_tg_alerts"] = log_dict
-    try:
-        with open(TG_LOG_FILE, "w", encoding="utf-8") as f:
-            json.dump(log_dict, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
-
 def send_telegram_message(bot_token: str, chat_id: str, html_text: str) -> tuple:
     if not bot_token or not chat_id:
         return False, "بيانات البوت غير مكتملة"
@@ -830,35 +1017,7 @@ def detect_telegram_chat_id(bot_token: str) -> tuple:
         return None, f"تعذر الاتصال بتليجرام: {e}"
 
 # ==========================================
-# إدارة حفظ وتحميل المحفظة الشخصية
-# ==========================================
-PORTFOLIO_FILE = "my_egx_portfolio.json"
-
-def load_portfolio() -> list:
-    if "my_portfolio" in st.session_state:
-        return st.session_state["my_portfolio"]
-    if os.path.exists(PORTFOLIO_FILE):
-        try:
-            with open(PORTFOLIO_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, list):
-                    st.session_state["my_portfolio"] = data
-                    return data
-        except Exception:
-            pass
-    st.session_state["my_portfolio"] = []
-    return []
-
-def save_portfolio(portfolio_list: list):
-    st.session_state["my_portfolio"] = portfolio_list
-    try:
-        with open(PORTFOLIO_FILE, "w", encoding="utf-8") as f:
-            json.dump(portfolio_list, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
-
-# ==========================================
-# محرك المسح الشامل المباشر لجميع أسهم البورصة (مع كسر الكاش)
+# محرك المسح الشامل المباشر لجميع أسهم البورصة
 # ==========================================
 LEADERS_EGX_SYMBOLS = {
     "COMI", "TMGH", "SWDY", "ETEL", "EFIH", "FWRY", "HRHO", "ABUK", "ORAS",
@@ -975,7 +1134,6 @@ def score_stock_from_tv(
     pct_change = q["change"]
     perf_1m = q["perf_1m"]
 
-    # تطبيع السيولة اللحظية حسب الوقت المنقضي من الجلسة
     expected_vol_now = max(1.0, avg_vol * max(0.04, session_progress)) if avg_vol > 0 else 1.0
     pace_rvol = (vol / expected_vol_now) if vol > 0 else 0.0
 
@@ -984,17 +1142,15 @@ def score_stock_from_tv(
 
     flow_res = analyze_intraday_flow(q, fallback_close=close, session_progress=session_progress)
 
-    # السيولة الفعلية المنفذة منذ بداية الجلسة حتى هذه اللحظة بالمليون جنيه
     exec_price = flow_res["vwap"] if flow_res["vwap"] > 0 else close
     effective_turnover_m = ((vol * exec_price) / 1_000_000) if vol > 0 else 0.0
 
-    pts_trend = 0       # 30 نقطة: الاتجاه اليومي والقوة النسبية
-    pts_wyckoff = 0     # 35 نقطة: وتيرة السيولة اللحظية وبصمة الحيتان
-    pts_intraday = 0    # 35 نقطة: التدفق اللحظي (VWAP + 15m Momentum + CLV)
+    pts_trend = 0
+    pts_wyckoff = 0
+    pts_intraday = 0
     tags = []
     setup_type = "👀 مراقبة"
 
-    # 1. الاتجاه اليومي والقوة النسبية (30 نقطة)
     if ema200 > 0:
         if close > ema200:
             pts_trend += 12
@@ -1018,7 +1174,6 @@ def score_stock_from_tv(
     elif rs_alpha > 0:
         pts_trend += 3
 
-    # 2. وتيرة السيولة اللحظية وبصمة الحيتان (35 نقطة)
     is_breakout = (close >= high_1m * 0.994) and (high_1m > 0) and (pct_change > 0.4)
     if is_breakout and pace_rvol >= 1.35:
         pts_wyckoff = 35
@@ -1041,7 +1196,6 @@ def score_stock_from_tv(
         tags.append(f"جفاف عرض ({pace_rvol:.1f}x)")
         setup_type = "🎯 تصحيح بلا بائع"
 
-    # 3. نبض التدفق اللحظي داخل الجلسة (35 نقطة)
     vwap_diff = flow_res["vwap_diff_pct"]
     if vwap_diff >= 0.4:
         pts_intraday += 15
@@ -1175,7 +1329,7 @@ def _heliocentric_xyz(planet_name: str, T: float) -> tuple:
     cos_I, sin_I = math.cos(I), math.sin(I)
 
     x = (cos_O * cos_w - sin_O * sin_w * cos_I) * x_p + (-cos_O * sin_w - sin_O * cos_w * cos_I) * y_p
-    y = (sin_O * cos_w + cos_O * sin_w * cos_I) * x_p + (-sin_O * sin_w + cos_O * cos_w * cos_I) * y_p
+    y = (sin_O * cos_w + cos_O * sin_w * cos_I) * x_p + (-sin_O * sin_w + cos_O * sin_w * cos_I) * y_p
     z = (sin_w * sin_I) * x_p + (cos_w * sin_I) * y_p
     return x, y, z
 
@@ -1491,9 +1645,10 @@ def fetch_stock_news(symbol_clean: str) -> list:
     return news_list
 
 # ==========================================
-# تحميل المحفظة + حساب الجلسة + المسح اللحظي
+# تحميل المحفظة السحابية + حساب الجلسة + المسح اللحظي
 # ==========================================
-my_portfolio = load_portfolio()
+force_sync = st.session_state.pop("force_cloud_sync", False)
+my_portfolio, cloud_connected = load_portfolio(force_cloud_refresh=force_sync)
 portfolio_clean_syms = [
     item["symbol"].upper().replace(".CA", "").strip()
     for item in my_portfolio if item.get("symbol")
@@ -1506,9 +1661,40 @@ with st.spinner("🚀 جاري مسح جميع أسهم البورصة وتحد�
     raw_egx_tv_map, last_live_sync = fetch_full_egx_tv_scanner(refresh_nonce)
 
 # ==========================================
-# الشريط الجانبي (إعدادات السكانر والتليجرام)
+# الشريط الجانبي (إعدادات السحابة والتليجرام والسكانر)
 # ==========================================
 with st.sidebar:
+    st.markdown("## ☁️ المزامنة السحابية (Supabase)")
+    default_sb_url = st.session_state.get("sb_url_val", get_secret_safe("SUPABASE_URL"))
+    default_sb_key = st.session_state.get("sb_key_val", get_secret_safe("SUPABASE_KEY"))
+
+    sb_url_in = st.text_input("🌐 Supabase URL:", value=default_sb_url, placeholder="https://xxxx.supabase.co")
+    st.session_state["sb_url_val"] = sb_url_in
+
+    sb_key_in = st.text_input("🔐 Supabase Key:", value=default_sb_key, type="password", placeholder="eyJhbGci...")
+    st.session_state["sb_key_val"] = sb_key_in
+
+    sb_c1, sb_c2 = st.columns(2)
+    with sb_c1:
+        if st.button("🔌 فحص الاتصال", use_container_width=True):
+            ok_sb, msg_sb = test_supabase_connection()
+            if ok_sb:
+                st.session_state["force_cloud_sync"] = True
+                st.success(msg_sb)
+                st.rerun()
+            else:
+                st.error(msg_sb)
+    with sb_c2:
+        if st.button("⬆️ رفع المحلي للسحابة", use_container_width=True, help="يرفع الأسهم المحفوظة محلياً إلى Supabase"):
+            local_items = _load_local_portfolio_file() or my_portfolio
+            ok_up, msg_up = sync_full_portfolio_to_cloud(local_items)
+            if ok_up:
+                st.success(msg_up)
+                st.rerun()
+            else:
+                st.error(msg_up)
+
+    st.divider()
     st.markdown("## 📲 ربط تنبيهات التليجرام")
     default_token = st.session_state.get("tg_token_val", get_secret_safe("TELEGRAM_BOT_TOKEN"))
     default_chat = st.session_state.get("tg_chat_val", get_secret_safe("TELEGRAM_CHAT_ID"))
@@ -1539,7 +1725,7 @@ with st.sidebar:
         ok, res_msg = send_telegram_message(
             tg_token,
             tg_chat_id,
-            "🦅 <b>EGX Whale Hunter Pro V7.8</b>\n✅ تم ربط بوت التليجرام بنجاح! محرك السيولة الفعلية وموجات إليوت يعملان الآن."
+            "🦅 <b>EGX Whale Hunter Pro V7.9</b>\n✅ تم ربط بوت التليجرام والمزامنة السحابية بنجاح!"
         )
         if ok:
             st.success("✅ وصلت الرسالة التجريبية لتليجرام!")
@@ -1573,8 +1759,9 @@ with st.sidebar:
     min_score = st.slider("🎯 الحد الأدنى للسكور بجدول الرادار", min_value=0, max_value=100, value=45, step=5)
     alert_buffer_pct = st.slider("🔔 حساسية تنبيه قرب الهدف/الوقف (%)", min_value=0.5, max_value=8.0, value=2.5, step=0.5)
 
-    if st.button("🔄 تحديث جميع الأسهم والأسعار الآن", type="primary", use_container_width=True):
+    if st.button("🔄 تحديث جميع الأسهم والسحابة الآن", type="primary", use_container_width=True):
         st.session_state["refresh_nonce"] = refresh_nonce + 1
+        st.session_state["force_cloud_sync"] = True
         fetch_full_egx_tv_scanner.clear()
         fetch_single_stock_history.clear()
         st.rerun()
@@ -1583,11 +1770,13 @@ with st.sidebar:
 # البانر الافتتاحي المضيء (Hero Banner)
 # ==========================================
 tg_status_txt = "📲 تليجرام متصل" if (tg_token and tg_chat_id) else "📴 تليجرام غير مربوط"
+cloud_status_txt = "☁️ سحابة Supabase متصلة" if cloud_connected else "💾 حفظ محلي (أدخل مفاتيح السحابة)"
+
 st.markdown(f"""
 <div class="hero-banner">
     <div>
-        <div class="hero-title">🦅 <span class="hero-accent">EGX WHALE HUNTER</span> PRO <span style="font-size:13px;color:#FACC15;">V7.8</span></div>
-        <div class="hero-sub">🌐 تغطية كاملة ({len(raw_egx_tv_map)} سهم) • 💧 السيولة الفعلية بالجنيه • 🌊 موجات إليوت • 💼 محفظتي ({len(portfolio_clean_syms)}) • {tg_status_txt}</div>
+        <div class="hero-title">🦅 <span class="hero-accent">EGX WHALE HUNTER</span> PRO <span style="font-size:13px;color:#FACC15;">V7.9</span></div>
+        <div class="hero-sub">🌐 تغطية كاملة ({len(raw_egx_tv_map)} سهم) • {cloud_status_txt} • 💼 محفظتي ({len(portfolio_clean_syms)}) • {tg_status_txt}</div>
     </div>
     <div class="session-pill">{session_info['badge']}</div>
 </div>
@@ -1651,7 +1840,6 @@ for m_sym in portfolio_clean_syms:
             "TradingView": f"https://www.tradingview.com/chart/?symbol=EGX:{m_sym}"
         }
 
-# ترتيب ديناميكي يكسر التعادل بالسكور اللحظي ووتيرة السيولة
 scanner_results.sort(
     key=lambda x: (
         x["السكور"],
@@ -1664,16 +1852,15 @@ scanner_results.sort(
 filtered_results = [r for r in scanner_results if r["السكور"] >= min_score]
 
 # ==========================================
-# معالجة محفظتي وتوليد الإشعارات الفورية + إرسالها لتليجرام
+# معالجة محفظتي وتوليد الإشعارات الفورية + تسجيلها سحابياً
 # ==========================================
 portfolio_rows = []
 active_alerts = []
 total_port_cost = 0.0
 total_port_val = 0.0
 
-sent_tg_log = load_sent_tg_log()
 today_str = get_cairo_now().strftime("%Y-%m-%d")
-log_changed = False
+sent_tg_log = load_sent_tg_log(today_str, force_refresh=force_sync)
 
 for item in my_portfolio:
     sym = item["symbol"].upper().replace(".CA", "").strip()
@@ -1743,8 +1930,7 @@ for item in my_portfolio:
         if dedup_key not in sent_tg_log:
             ok, _ = send_telegram_message(tg_token, tg_chat_id, tg_msg_body)
             if ok:
-                sent_tg_log[dedup_key] = get_cairo_now().strftime("%H:%M")
-                log_changed = True
+                record_sent_tg_alert(dedup_key, get_cairo_now().strftime("%H:%M"), sent_tg_log)
 
     span = max(0.01, tp1 - sl)
     progress_ratio = min(1.0, max(0.0, (curr_p - sl) / span))
@@ -1783,11 +1969,7 @@ if tg_auto_whales and tg_token and tg_chat_id:
                 )
                 ok, _ = send_telegram_message(tg_token, tg_chat_id, w_msg)
                 if ok:
-                    sent_tg_log[w_key] = get_cairo_now().strftime("%H:%M")
-                    log_changed = True
-
-if log_changed:
-    save_sent_tg_log(sent_tg_log)
+                    record_sent_tg_alert(w_key, get_cairo_now().strftime("%H:%M"), sent_tg_log)
 
 if active_alerts:
     for level, msg in active_alerts:
@@ -1802,8 +1984,9 @@ with ref_c1:
 with ref_c2:
     live_auto = st.checkbox("⚡ تحديث تلقائي كل 5 دقائق", value=False)
 with ref_c3:
-    if st.button("🔄 سحب الأسعار والسيولة الآن", use_container_width=True):
+    if st.button("🔄 سحب الأسعار والمزامنة الآن", use_container_width=True):
         st.session_state["refresh_nonce"] = refresh_nonce + 1
+        st.session_state["force_cloud_sync"] = True
         fetch_full_egx_tv_scanner.clear()
         st.rerun()
 
@@ -1893,6 +2076,9 @@ if "رادار" in main_view:
 else:
     st.markdown("### 💼 محفظتي الشخصية والتنبيهات الفورية")
 
+    if not cloud_connected:
+        st.info("💡 **نصيحة:** أدخل `SUPABASE_URL` و `SUPABASE_KEY` في القائمة الجانبية (أو في Streamlit Secrets) لضمان حفظ محفظتك وسجل التنبيهات سحابياً وعدم مسحها عند إعادة تشغيل السيرفر.")
+
     if st.session_state.get("last_port_msg"):
         st.success(st.session_state["last_port_msg"])
 
@@ -1957,8 +2143,7 @@ else:
             if not clean_in:
                 st.error("⚠️ من فضلك اكتب رمز السهم أولاً (مثل ABUK).")
             else:
-                updated_list = [p for p in my_portfolio if p["symbol"].upper().replace(".CA", "").strip() != clean_in]
-                updated_list.append({
+                _, save_status = upsert_portfolio_item({
                     "symbol": clean_in,
                     "shares": int(in_shares),
                     "buy_price": float(in_buy),
@@ -1966,8 +2151,7 @@ else:
                     "tp1": float(in_tp1),
                     "tp2": float(in_tp2)
                 })
-                save_portfolio(updated_list)
-                st.session_state["last_port_msg"] = f"✅ تم حفظ سهم ({clean_in}) بنجاح! إجمالي الأسهم في محفظتك الآن: {len(updated_list)} أسهم."
+                st.session_state["last_port_msg"] = f"✅ تم حفظ سهم ({clean_in}) بنجاح ({save_status})!"
                 st.rerun()
 
     if not portfolio_rows:
@@ -2001,9 +2185,8 @@ else:
             st.write("")
             st.write("")
             if st.button(f"🗑️ حذف {port_selected_sym} من المحفظة", use_container_width=True):
-                new_p = [p for p in my_portfolio if p["symbol"].upper().replace(".CA", "").strip() != port_selected_sym]
-                save_portfolio(new_p)
-                st.session_state["last_port_msg"] = f"🗑️ تم حذف سهم ({port_selected_sym}) من محفظتك."
+                _, del_status = delete_portfolio_item(port_selected_sym)
+                st.session_state["last_port_msg"] = f"🗑️ تم حذف سهم ({port_selected_sym}) ({del_status})."
                 st.rerun()
 
         p_item = next(r for r in portfolio_rows if r["الرمز"] == port_selected_sym)
@@ -2081,8 +2264,12 @@ else:
                 try:
                     restored = json.load(uploaded_file)
                     if isinstance(restored, list):
-                        save_portfolio(restored)
-                        st.success("✅ تمت استعادة المحفظة بنجاح!")
+                        ok_r, msg_r = sync_full_portfolio_to_cloud(restored)
+                        if not ok_r:
+                            _save_local_portfolio_cache(restored)
+                            st.success("✅ تمت استعادة المحفظة محلياً بنجاح!")
+                        else:
+                            st.success(msg_r)
                         st.rerun()
                 except Exception:
                     st.error("⚠️ ملف غير صالح.")
@@ -2590,5 +2777,6 @@ if all_analyzed_map:
 if live_auto:
     time.sleep(300)
     st.session_state["refresh_nonce"] = refresh_nonce + 1
+    st.session_state["force_cloud_sync"] = True
     fetch_full_egx_tv_scanner.clear()
     st.rerun()
