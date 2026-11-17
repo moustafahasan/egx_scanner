@@ -1775,6 +1775,68 @@ with tab_portfolio:
                 st.session_state["last_port_msg"] = f"✅ تم حفظ سهم ({clean_in} — {saved_name}) بنجاح ({sv_status})!"
                 st.session_state["clear_add_sym"] = True
                 st.rerun()
+                st.divider()
+        st.markdown("#### 📄 استيراد تلقائي من مستندات ثاندر (Thndr PDF / Excel / CSV)")
+        thndr_files = st.file_uploader(
+            "📎 ارفع فاتورة أو عدة فواتير تنفيذ من ثاندر (PDF) أو كشف حساب (Excel / CSV):",
+            type=["pdf", "csv", "xlsx", "xls"],
+            accept_multiple_files=True,
+            key="thndr_docs_uploader"
+        )
+        if thndr_files:
+            parsed_ops = parse_thndr_files(thndr_files, EGX_ARABIC_NAMES)
+            if not parsed_ops:
+                st.warning("⚠️ لم يتم التعرف على بنود الصفقة تلقائياً داخل الملف؛ تأكد أنه فاتورة تنفيذ أو كشف حساب ثاندر.")
+            else:
+                st.info(f"✅ تم استخراج **{len(parsed_ops)}** عملية من مستندات ثاندر — راجع الجدول أو عدّل أي رقم قبل الاعتماد:")
+                edited_ops = st.data_editor(pd.DataFrame(parsed_ops), use_container_width=True, hide_index=True, num_rows="dynamic")
+                if st.button("🚀 اعتماد العمليات وتحديث المحفظة والسحابة فوراً", type="primary", use_container_width=True):
+                    applied_cnt = 0
+                    for _, op in edited_ops.iterrows():
+                        sym_o = str(op.get("الرمز", "")).upper().replace(".CA", "").strip()
+                        qty_o = int(op.get("الكمية", 0))
+                        prc_o = float(op.get("السعر", 0.0))
+                        side_o = str(op.get("العملية", ""))
+                        if not sym_o or qty_o <= 0 or prc_o <= 0:
+                            continue
+
+                        if "بيع" in side_o or "Sell" in side_o:
+                            ex_item = next((x for x in my_portfolio if x["symbol"].upper() == sym_o), None)
+                            if ex_item:
+                                ex_sh = int(ex_item["shares"])
+                                ex_bp = float(ex_item["buy_price"])
+                                sell_qty = min(ex_sh, qty_o)
+                                record_closed_trade(sym_o, sell_qty, ex_bp, prc_o, fee_rate)
+                                if ex_sh > sell_qty:
+                                    upsert_portfolio_item({
+                                        **ex_item, "shares": ex_sh - sell_qty
+                                    })
+                                applied_cnt += 1
+                        else:
+                            ex_item = next((x for x in my_portfolio if x["symbol"].upper() == sym_o), None)
+                            if ex_item:
+                                old_sh = int(ex_item["shares"])
+                                old_bp = float(ex_item["buy_price"])
+                                tot_sh = old_sh + qty_o
+                                avg_bp = round(((old_sh * old_bp) + (qty_o * prc_o)) / tot_sh, 2)
+                                upsert_portfolio_item({
+                                    **ex_item, "shares": tot_sh, "buy_price": avg_bp
+                                })
+                            else:
+                                s_inf = all_analyzed_map.get(sym_o, {})
+                                atr_v = s_inf.get("ATR14", prc_o * 0.025)
+                                sl_v = round(max(0.01, prc_o - 2.0 * atr_v), 2)
+                                r_u = max(0.01, prc_o - sl_v)
+                                upsert_portfolio_item({
+                                    "symbol": sym_o, "shares": qty_o, "buy_price": prc_o,
+                                    "stop_loss": sl_v, "tp1": round(prc_o + 1.618 * r_u, 2),
+                                    "tp2": round(prc_o + 2.618 * r_u, 2),
+                                    "trailing_enabled": True, "trailing_stage": 0
+                                })
+                            applied_cnt += 1
+
+                    st.session_state["last_port_msg"] = f"✅ تم اعتماد وتنفيذ {applied_cnt} عملية من مستندات ثاندر ومزامنتها!"
+                    st.rerun()
 
     # --- فرعي 2.3: دفتر الصفقات المغلقة والنسخ الاحتياطي ---
     with ptab_history:
