@@ -1,321 +1,560 @@
 import os
 import re
+import sys
 import json
+import time
 import urllib.request
 import urllib.parse
-from datetime import datetime, timezone, timedelta
-from zoneinfo import ZoneInfo
+from datetime import datetime, timedelta, timezone
 
+# ==========================================
+# إعدادات البيئة والاتصال (Supabase + Telegram)
+# ==========================================
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip().rstrip("/")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "").strip()
 TG_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 TG_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
-FEE_RATE = float(os.environ.get("EGX_FEE_RATE", "0.0016"))
+FEE_RATE = float(os.environ.get("THNDR_FEE_RATE", "0.0016"))
 ALERT_BUFFER_PCT = float(os.environ.get("ALERT_BUFFER_PCT", "2.5"))
 
+EGX_NAMES = {
+    "COMI": "البنك التجاري الدولي (CIB)", "TMGH": "مجموعة طلعت مصطفى",
+    "HRHO": "إي إف جي القابضة (هيرميس)", "ABUK": "أبو قير للأسمدة",
+    "MFPC": "مصر لإنتاج الأسمدة (موبكو)", "SWDY": "السويدي إليكتريك",
+    "EAST": "الشرقية - إيسترن كومباني", "EFIH": "إي فاينانس",
+    "FWRY": "فوري للمدفوعات", "ESRS": "حديد عز", "ETEL": "المصرية للاتصالات",
+    "EKHO": "القابضة المصرية الكويتية ($)", "EKHOA": "القابضة المصرية الكويتية (جنيه)",
+    "ORAS": "أوراسكوم كونستراكشون", "OCDI": "سوديك", "PHDC": "بالم هيلز",
+    "HELI": "مصر الجديدة للإسكان", "MASR": "مدينة مصر للإسكان",
+    "MNHD": "مدينة مصر للإسكان", "EMFD": "إعمار مصر", "ORHD": "أوراسكوم للتنمية",
+    "SKPC": "سيدي كرير للبتروكيماويات", "AMOC": "أموك للزيوت المعدنية",
+    "JUFO": "جهينة للصناعات الغذائية", "EFID": "إيديتا للصناعات الغذائية",
+    "DOMT": "دومتي", "OLFI": "عبور لاند", "ISPH": "ابن سينا فارما",
+    "CLHO": "مستشفيات كليوباترا", "RMDA": "راميدا للأدوية", "PHAR": "إيبيكو للأدوية",
+    "ADIB": "مصرف أبو ظبي الإسلامي", "CIEB": "كريدي أجريكول مصر",
+    "QNBA": "بنك قطر الوطني الأهلي", "FAIT": "بنك فيصل الإسلامي",
+    "HDBK": "بنك التعمير والإسكان", "BTFH": "بلتون القابضة", "CIHC": "سي آي كابيتال",
+    "DSCW": "دايس للملابس", "KABO": "كابو للمنسوجات", "KABL": "الكابلات الكهربائية",
+    "RACC": "راية لخدمات مراكز الاتصالات", "CCAP": "القلعة للاستثمارات",
+    "EGAL": "مصر للألومنيوم", "TAQA": "طاقة عربية", "GBCO": "جي بي كورب",
+    "MTIE": "إم إم جروب", "ISMQ": "الإسماعيلية الوطنية (فوديكو)",
+    "TANM": "تنمية للاستثمار العقاري", "AREH": "المصرية للمنتجعات",
+    "ICEN": "إيكون الهندسية", "ALCN": "الإسكندرية لتداول الحاويات",
+    "BOYN": "بنيان للتنمية والتجارة",
+}
 
 def get_cairo_now() -> datetime:
     try:
+        from zoneinfo import ZoneInfo
         return datetime.now(ZoneInfo("Africa/Cairo"))
     except Exception:
         return datetime.now(timezone(timedelta(hours=2)))
 
+def is_egx_market_open() -> tuple[bool, float]:
+    now = get_cairo_now()
+    if now.weekday() not in [6, 0, 1, 2, 3]:
+        return False, 1.0
+    start_dt = now.replace(hour=10, minute=0, second=0, microsecond=0)
+    end_dt = now.replace(hour=14, minute=30, second=0, microsecond=0)
+    if start_dt <= now <= end_dt:
+        elapsed = max(5.0, (now - start_dt).total_seconds() / 60.0)
+        return True, min(1.0, max(0.12, elapsed / 270.0))
+    return False, 1.0
 
-def is_egx_market_open(now_dt: datetime) -> bool:
-    if now_dt.weekday() not in [6, 0, 1, 2, 3]:
-        return False
-    mins = now_dt.hour * 60 + now_dt.minute
-    return (9 * 60 + 55) <= mins <= (14 * 60 + 55)
-
-
-def sb_request(method: str, endpoint: str, payload=None, extra_headers: dict = None):
+# ==========================================
+# دوال Supabase API
+# ==========================================
+def sb_request(method: str, path: str, payload=None, extra_headers=None):
     if not SUPABASE_URL or not SUPABASE_KEY:
-        return False, "Missing Supabase credentials"
-    url = f"{SUPABASE_URL}/rest/v1/{endpoint}"
+        return False, None
     headers = {
         "apikey": SUPABASE_KEY,
         "Authorization": f"Bearer {SUPABASE_KEY}",
         "Content-Type": "application/json",
+        "Prefer": "return=representation",
     }
     if extra_headers:
         headers.update(extra_headers)
-    data_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else None
+    url = f"{SUPABASE_URL}/rest/v1/{path}"
+    data_bytes = json.dumps(payload).encode("utf-8") if payload is not None else None
+    req = urllib.request.Request(url, data=data_bytes, headers=headers, method=method)
     try:
-        req = urllib.request.Request(url, data=data_bytes, headers=headers, method=method)
         with urllib.request.urlopen(req, timeout=10) as resp:
             raw = resp.read().decode("utf-8")
             return True, (json.loads(raw) if raw else [])
     except Exception as e:
-        return False, str(e)
+        print(f"[Supabase Error] {path}: {e}")
+        return False, None
 
+def get_tg_offset() -> int:
+    ok, data = sb_request("GET", "tg_alerts_log?alert_key=eq.BOT_LAST_OFFSET&limit=1")
+    if ok and isinstance(data, list) and data:
+        try:
+            return int(data[0].get("sent_at", "0"))
+        except Exception:
+            pass
+    if os.path.exists(".tg_offset"):
+        try:
+            return int(open(".tg_offset").read().strip())
+        except Exception:
+            pass
+    return 0
 
-def send_telegram(text_html: str) -> bool:
-    if not TG_TOKEN or not TG_CHAT_ID:
+def save_tg_offset(new_offset: int):
+    sb_request(
+        "POST",
+        "tg_alerts_log?on_conflict=alert_key",
+        payload=[{"alert_key": "BOT_LAST_OFFSET", "sent_at": str(new_offset)}],
+        extra_headers={"Prefer": "resolution=merge-duplicates,return=representation"},
+    )
+    try:
+        with open(".tg_offset", "w") as f:
+            f.write(str(new_offset))
+    except Exception:
+        pass
+
+# ==========================================
+# دوال تليجرام (إرسال + استقبال الأوامر)
+# ==========================================
+def send_tg(text_html: str, chat_id: str = None) -> bool:
+    target_chat = chat_id or TG_CHAT_ID
+    if not TG_TOKEN or not target_chat:
         return False
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
     payload = json.dumps({
-        "chat_id": TG_CHAT_ID,
+        "chat_id": target_chat,
         "text": text_html,
         "parse_mode": "HTML",
-        "disable_web_page_preview": True
+        "disable_web_page_preview": True,
     }).encode("utf-8")
+    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
     try:
-        req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=10) as resp:
             res = json.loads(resp.read().decode("utf-8"))
             return bool(res.get("ok"))
-    except Exception:
+    except Exception as e:
+        print(f"[Telegram Send Error]: {e}")
         return False
 
+def fetch_tg_updates(offset: int) -> list:
+    if not TG_TOKEN:
+        return []
+    url = f"https://api.telegram.org/bot{TG_TOKEN}/getUpdates?offset={offset}&timeout=2"
+    try:
+        with urllib.request.urlopen(url, timeout=8) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            return data.get("result", []) if data.get("ok") else []
+    except Exception as e:
+        print(f"[Telegram Poll Error]: {e}")
+        return []
 
-def log_alert_once(alert_key: str, sent_time: str, sent_keys: set):
-    sent_keys.add(alert_key)
-    sb_request(
-        "POST",
-        "egx_alerts_log?on_conflict=alert_key",
-        payload={"alert_key": alert_key, "sent_time": sent_time},
-        extra_headers={"Prefer": "resolution=merge-duplicates,return=minimal"}
-    )
-
-
-def fetch_tv_quotes() -> dict:
+# ==========================================
+# سحب بيانات البورصة المصرية اللحظية من TradingView
+# ==========================================
+def fetch_egx_market() -> dict:
     url = "https://scanner.tradingview.com/egypt/scan"
     cols = [
-        "name", "close", "change", "high", "low", "volume",
-        "average_volume_10d_calc", "ATR", "EMA20", "EMA50", "EMA200", "VWAP"
+        "name", "description", "close", "change", "volume", "Value.Traded",
+        "average_volume_10d_calc", "ATR", "EMA20", "EMA50", "EMA200",
+        "VWAP", "RSI|15", "MACD.macd|15", "MACD.signal|15", "high", "low"
     ]
-    payload = json.dumps({
+    body = json.dumps({
         "filter": [{"left": "type", "operation": "in_range", "right": ["stock", "dr", "fund"]}],
         "options": {"lang": "en"},
         "markets": ["egypt"],
         "symbols": {"query": {"types": []}, "tickers": []},
         "columns": cols,
-        "sort": {"sortBy": "volume", "sortOrder": "desc"},
-        "range": [0, 500]
+        "sort": {"sortBy": "Value.Traded", "sortOrder": "desc"},
+        "range": [0, 350],
     }).encode("utf-8")
-    quotes = {}
+
+    _, prog = is_egx_market_open()
+    market_map = {}
     try:
-        req = urllib.request.Request(
-            url, data=payload,
-            headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"}
-        )
+        req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"}, method="POST")
         with urllib.request.urlopen(req, timeout=12) as resp:
-            data = json.loads(resp.read().decode("utf-8")).get("data", [])
-            for row in data:
-                full_s = row.get("s", "")
-                d = row.get("d", [])
-                if ":" not in full_s or len(d) < 2:
-                    continue
-                sym = full_s.split(":")[1].strip().upper()
-                if not re.match(r"^[A-Z0-9]{2,12}$", sym):
-                    continue
-                close_v = float(d[1] or 0.0)
-                if close_v <= 0:
-                    continue
-                quotes[sym] = {
-                    "close": close_v,
-                    "change": float(d[2] or 0.0),
-                    "high": float(d[3] or close_v),
-                    "low": float(d[4] or close_v),
-                    "volume": float(d[5] or 0.0),
-                    "avg_vol10": float(d[6] or 0.0),
-                    "atr": float(d[7] or (close_v * 0.025)),
-                    "ema20": float(d[8] or close_v),
-                    "ema50": float(d[9] or close_v),
-                    "ema200": float(d[10] or 0.0),
-                    "vwap": float(d[11] or close_v),
-                }
+            raw = json.loads(resp.read().decode("utf-8"))
+
+        for row in raw.get("data", []):
+            d = row.get("d", [])
+            if len(d) < len(cols):
+                continue
+            rec = dict(zip(cols, d))
+            sym = str(rec.get("name", "")).upper().strip()
+            close_p = float(rec.get("close") or 0.0)
+            if not sym or close_p <= 0:
+                continue
+
+            atr = float(rec.get("ATR") or (close_p * 0.025))
+            ema20, ema50, ema200 = float(rec.get("EMA20") or close_p), float(rec.get("EMA50") or close_p), float(rec.get("EMA200") or close_p)
+            vwap = float(rec.get("VWAP") or close_p)
+            vol = float(rec.get("volume") or 0.0)
+            avg_v = float(rec.get("average_volume_10d_calc") or 0.0)
+            rvol = (vol / (avg_v * prog)) if avg_v > 0 else 1.0
+            chg = float(rec.get("change") or 0.0)
+            rsi15 = float(rec.get("RSI|15") or 50.0)
+            vwap_diff = ((close_p - vwap) / vwap * 100.0) if vwap > 0 else 0.0
+
+            score = 0
+            if close_p > ema20 > ema50:
+                score += 18
+            elif close_p > ema50:
+                score += 10
+            if close_p > ema200:
+                score += 10
+            if rvol >= 1.8 and chg > 0.5:
+                score += 35
+            elif rvol >= 1.2 and chg > 0:
+                score += 22
+            if vwap_diff >= 0.4:
+                score += 18
+            elif vwap_diff > 0:
+                score += 9
+            if rsi15 >= 56:
+                score += 12
+            if float(rec.get("MACD.macd|15") or 0) > float(rec.get("MACD.signal|15") or 0):
+                score += 7
+
+            sl = round(max(0.01, close_p - 2.0 * atr), 2)
+            r_sh = max(0.01, close_p - sl)
+            market_map[sym] = {
+                "symbol": sym,
+                "name": EGX_NAMES.get(sym, str(rec.get("description") or sym)),
+                "close": round(close_p, 2),
+                "change": round(chg, 2),
+                "atr": round(atr, 3),
+                "ema20": round(ema20, 2),
+                "vwap": round(vwap, 2),
+                "vwap_diff": round(vwap_diff, 2),
+                "rvol": round(rvol, 2),
+                "rsi15": round(rsi15, 1),
+                "score": min(100, score),
+                "sl": sl,
+                "tp1": round(close_p + 1.618 * r_sh, 2),
+                "tp2": round(close_p + 2.618 * r_sh, 2),
+            }
     except Exception as e:
-        print(f"TV fetch error: {e}")
-    return quotes
+        print(f"[TV Fetch Error]: {e}")
+    return market_map
 
-
-def get_top_morning_radar(quotes: dict, elapsed_mins: int) -> list:
-    progress = max(0.05, min(1.0, float(elapsed_mins) / 270.0))
-    ranked = []
-    for sym, q in quotes.items():
-        close = q["close"]
-        vol = q["volume"]
-        avg_v = q["avg_vol10"]
-        vwap = q["vwap"] if q["vwap"] > 0 else close
-        turnover_m = (vol * vwap) / 1_000_000.0
-        if turnover_m < 0.3 or q["change"] >= 19.0 or avg_v <= 0:
-            continue
-        rvol = vol / max(1.0, avg_v * progress)
-        if rvol >= 1.35 and close > vwap and q["change"] > 0.3:
-            pts = min(100, int(round(rvol * 25 + q["change"] * 4 + (15 if close > q["ema50"] else 0))))
-            ranked.append((pts, rvol, sym, q))
-    ranked.sort(key=lambda x: (x[0], x[1]), reverse=True)
-    return ranked[:3]
-
-
-def run():
-    now_dt = get_cairo_now()
-    if not is_egx_market_open(now_dt):
-        print(f"[{now_dt.strftime('%H:%M')}] Market closed. Skipping.")
+# ==========================================
+# معالجة الأوامر الواردة من تليجرام (رايح جاي)
+# ==========================================
+def handle_command(text: str, chat_id: str, market_map: dict):
+    raw_txt = text.strip()
+    parts = raw_txt.split()
+    if not parts:
         return
+    cmd = parts[0].lower()
 
-    today_str = now_dt.strftime("%Y-%m-%d")
-    time_str = now_dt.strftime("%H:%M")
-    mins_now = now_dt.hour * 60 + now_dt.minute
-    elapsed_mins = max(10, mins_now - (10 * 60))
-
-    q_prefix = urllib.parse.quote(f"{today_str}%")
-    ok_l, logs_raw = sb_request("GET", f"egx_alerts_log?select=alert_key&alert_key=like.{q_prefix}")
-    sent_keys = {r["alert_key"] for r in logs_raw} if (ok_l and isinstance(logs_raw, list)) else set()
-
-    quotes = fetch_tv_quotes()
-    if not quotes:
-        return
-
-    # 1. ملخص افتتاح الجلسة (10:15 - 10:35 صباحاً)
-    if (10 * 60 + 15) <= mins_now <= (10 * 60 + 35):
-        morning_key = f"{today_str}_MORNING_RADAR"
-        if morning_key not in sent_keys:
-            top3 = get_top_morning_radar(quotes, elapsed_mins)
-            if top3:
-                m_lines = [f"☀️ <b>رادار افتتاح الجلسة ({time_str}) — أقوى تدفقات السيولة</b>", ""]
-                for idx, (pts, rvol, sym, q) in enumerate(top3, 1):
-                    sl_est = round(max(0.01, q["close"] - 2.0 * q["atr"]), 2)
-                    tp1_est = round(q["close"] + 1.618 * (q["close"] - sl_est), 2)
-                    m_lines.append(
-                        f"{idx}. <b>{sym}</b> | السعر: <b>{q['close']}</b> ({q['change']:+.1f}%) | "
-                        f"سيولة: <b>{rvol:.1f}x</b> | SL: {sl_est} | TP1: {tp1_est}"
-                    )
-                if send_telegram("\n".join(m_lines)):
-                    log_alert_once(morning_key, time_str, sent_keys)
-
-    # 2. قراءة المحفظة السحابية ومراقبة الوقف المتحرك والأهداف
-    ok_p, portfolio = sb_request(
-        "GET",
-        "egx_portfolio?select=symbol,shares,buy_price,stop_loss,tp1,tp2,trailing_enabled,trailing_stage"
-    )
-    if not ok_p:
-        ok_p, portfolio = sb_request("GET", "egx_portfolio?select=symbol,shares,buy_price,stop_loss,tp1,tp2")
-    if not ok_p or not portfolio:
-        print("No portfolio items found.")
-        return
-
-    total_cost = 0.0
-    total_val = 0.0
-    eod_lines = []
-
-    for item in portfolio:
-        sym = str(item.get("symbol", "")).upper().replace(".CA", "").strip()
-        shares = int(item.get("shares", 0))
-        buy_p = float(item.get("buy_price", 0.0))
-        if not sym or shares <= 0 or buy_p <= 0 or sym not in quotes:
-            continue
-
-        q = quotes[sym]
-        curr_p = q["close"]
-        atr14 = q["atr"] if q["atr"] > 0 else (buy_p * 0.025)
-        vwap = q["vwap"] if q["vwap"] > 0 else curr_p
-        ema20 = q["ema20"] if q["ema20"] > 0 else curr_p
-
-        sl = float(item.get("stop_loss", 0.0))
-        if sl <= 0:
-            sl = round(max(0.01, buy_p - 2.0 * atr14), 2)
-        risk_u = max(0.01, buy_p - sl)
-        tp1 = float(item.get("tp1", 0.0)) or round(buy_p + 1.618 * risk_u, 2)
-        tp2 = float(item.get("tp2", 0.0)) or round(buy_p + 2.618 * risk_u, 2)
-        trailing_on = bool(item.get("trailing_enabled", True))
-        trailing_stage = int(item.get("trailing_stage", 0))
-
-        # الوقف المتحرك الآلي
-        if trailing_on:
-            be_price = round(buy_p * (1.0 + FEE_RATE * 2.0), 2)
-            if curr_p >= tp1 and trailing_stage < 1 and be_price < curr_p:
-                new_sl = max(sl, be_price)
-                sb_request(
-                    "PATCH",
-                    f"egx_portfolio?symbol=eq.{urllib.parse.quote(sym)}",
-                    payload={"stop_loss": new_sl, "trailing_stage": 1, "updated_at": now_dt.isoformat()}
-                )
-                sl = new_sl
-                trailing_stage = 1
-                tr_key = f"{today_str}_{sym}_TRAIL_BE"
-                if tr_key not in sent_keys:
-                    msg = (
-                        f"🛡️ <b>تأمين الصفقة آلياً (Breakeven) — {sym}</b>\n"
-                        f"السعر وصل للهدف الأول <b>TP1 ({tp1})</b>.\n"
-                        f"تم رفع وقف الخسارة تلقائياً إلى نقطة التعادل: <b>{new_sl} ج.م</b>."
-                    )
-                    if send_telegram(msg):
-                        log_alert_once(tr_key, time_str, sent_keys)
-
-            if curr_p >= tp2:
-                anchor = max(vwap, ema20)
-                cand_sl = round(min(curr_p - 0.5 * atr14, anchor * 0.992), 2)
-                if cand_sl > sl * 1.003 and cand_sl < curr_p:
-                    sb_request(
-                        "PATCH",
-                        f"egx_portfolio?symbol=eq.{urllib.parse.quote(sym)}",
-                        payload={"stop_loss": cand_sl, "trailing_stage": 2, "updated_at": now_dt.isoformat()}
-                    )
-                    sl = cand_sl
-                    tr2_key = f"{today_str}_{sym}_TRAIL_{int(cand_sl * 100)}"
-                    if tr2_key not in sent_keys:
-                        msg = (
-                            f"🚀 <b>ملاحقة الأرباح (Trailing Stop) — {sym}</b>\n"
-                            f"السعر الحالي: <b>{curr_p} ج.م</b> (أعلى TP2).\n"
-                            f"تم رفع وقف حماية الأرباح الجديد إلى: <b>{cand_sl} ج.م</b>."
-                        )
-                        if send_telegram(msg):
-                            log_alert_once(tr2_key, time_str, sent_keys)
-
-        cost_v = shares * buy_p
-        mkt_v = shares * curr_p
-        net_pnl = (mkt_v - cost_v) - (mkt_v * FEE_RATE)
-        net_pct = (net_pnl / cost_v) * 100.0
-        total_cost += cost_v
-        total_val += mkt_v
-
-        eod_lines.append(
-            f"• <b>{sym}</b>: {curr_p} ({q['change']:+.1f}% اليوم) | صافي: <b>{net_pnl:+,.0f} ({net_pct:+.1f}%)</b> | SL: {sl}"
+    # 1) المساعدة والقائمة الرئيسية
+    if cmd in ["/start", "/help", "مساعدة", "مساعده", "اوامر", "أوامر", "القائمة"]:
+        msg = (
+            "🦅 <b>EGX Whale Hunter Bot — الأوامر التفاعلية (24/7)</b>\n\n"
+            "💼 <b>محفظتي</b> (أو <code>/portfolio</code>)\n"
+            "   ⬅️ عرض أسهمك وأرباحك ومستويات الوقف والأهداف\n\n"
+            "🎯 <b>رادار</b> (أو <code>/radar</code>)\n"
+            "   ⬅️ أقوى 5 فرص حيتان في البورصة المصرية الآن\n\n"
+            "🔍 <b>سعر ABUK</b> (أو اكتب رمز السهم مباشرة مثل <code>COMI</code>)\n"
+            "   ⬅️ السعر اللحظي، VWAP، السكور، والوقف المقترح\n\n"
+            "➕ <b>شراء ABUK 100 54.5</b> (أو <code>/buy ABUK 100 54.5</code>)\n"
+            "   ⬅️ إضافة السهم لمحفظتك أو تعديل متوسط الشراء\n\n"
+            "💰 <b>بيع ABUK 59.0</b> (أو <code>/sell ABUK 59.0</code>)\n"
+            "   ⬅️ إغلاق الصفقة وتسجيلها في دفتر الصفقات المغلقة\n\n"
+            "🛡️ <b>تأمين ABUK</b> (أو <code>/be ABUK</code>)\n"
+            "   ⬅️ رفع وقف الخسارة لنقطة التعادل فوراً"
         )
+        send_tg(msg, chat_id)
+        return
 
-        dist_sl = ((curr_p - sl) / curr_p) * 100.0
-        dist_tp1 = ((tp1 - curr_p) / curr_p) * 100.0
+    # 2) عرض المحفظة
+    if cmd in ["/portfolio", "محفظتي", "المحفظة", "المحفظه", "اسهمي", "أسهمي"]:
+        ok, port = sb_request("GET", "portfolio?select=*&order=symbol.asc")
+        if not ok or not port:
+            send_tg("💼 محفظتك فارغة حالياً في السحابة.", chat_id)
+            return
+        tot_cost, tot_val = 0.0, 0.0
+        lines = ["💼 <b>تقرير محفظتك اللحظي:</b>\n"]
+        for item in port:
+            sym = item["symbol"].upper()
+            sh = int(item.get("shares", 0))
+            bp = float(item.get("buy_price", 0))
+            sl = float(item.get("stop_loss", 0))
+            tp1 = float(item.get("tp1", 0))
+            m = market_map.get(sym, {})
+            cp = m.get("close", bp)
+            cost = sh * bp
+            val = sh * cp
+            pnl = (val - cost) - (val * FEE_RATE)
+            pnl_pct = (pnl / max(0.01, cost)) * 100.0
+            tot_cost += cost
+            tot_val += val
+            icon = "🟢" if pnl >= 0 else "🔴"
+            lines.append(
+                f"{icon} <b>{sym}</b> ({EGX_NAMES.get(sym, sym)})\n"
+                f"   الكمية: {sh} | شرائك: {bp} | الآن: <b>{cp}</b>\n"
+                f"   الربح: <b>{pnl:+,.0f} ج.م ({pnl_pct:+.1f}%)</b> | SL: {sl} | TP1: {tp1}"
+            )
+        tot_pnl = (tot_val - tot_cost) - (tot_val * FEE_RATE)
+        tot_pct = (tot_pnl / max(0.01, tot_cost)) * 100.0
+        lines.append(f"\n💰 <b>الإجمالي:</b> {tot_val:,.0f} ج.م | الصافي: <b>{tot_pnl:+,.0f} ج.م ({tot_pct:+.1f}%)</b>")
+        send_tg("\n".join(lines), chat_id)
+        return
 
-        alert_code = None
-        msg_body = None
-        if curr_p <= sl:
-            alert_code = "HIT_SL"
-            msg_body = f"🚨 <b>كسر وقف الخسارة — {sym}</b>\nالسعر: <b>{curr_p}</b> | الوقف: <b>{sl}</b>\nالصافي: {net_pnl:+,.0f} ج.م ({net_pct:+.1f}%)"
-        elif 0 < dist_sl <= ALERT_BUFFER_PCT:
-            alert_code = "NEAR_SL"
-            msg_body = f"⚠️ <b>اقتراب من الوقف — {sym}</b>\nالسعر: <b>{curr_p}</b> (يبعد {dist_sl:.1f}% عن <b>{sl}</b>)"
-        elif curr_p >= tp2:
-            alert_code = "HIT_TP2"
-            msg_body = f"🏆 <b>تحقق الهدف الثاني TP2 — {sym}</b>\nالسعر: <b>{curr_p}</b> | TP2: <b>{tp2}</b>\nالربح: <b>{net_pnl:+,.0f} ج.م ({net_pct:+.1f}%)</b>"
-        elif curr_p >= tp1:
-            alert_code = "HIT_TP1"
-            msg_body = f"🎯 <b>تحقق الهدف الأول TP1 — {sym}</b>\nالسعر: <b>{curr_p}</b> | TP1: <b>{tp1}</b>\nالربح: <b>{net_pnl:+,.0f} ج.م ({net_pct:+.1f}%)</b>"
-        elif 0 < dist_tp1 <= ALERT_BUFFER_PCT:
-            alert_code = "NEAR_TP1"
-            msg_body = f"🔔 <b>اقتراب من TP1 — {sym}</b>\nالسعر: <b>{curr_p}</b> (يبعد {dist_tp1:.1f}% عن <b>{tp1}</b>)"
+    # 3) رادار أقوى الفرص
+    if cmd in ["/radar", "رادار", "الرادار", "فرص", "الفرص"]:
+        ranked = sorted(market_map.values(), key=lambda x: (x["score"], x["rvol"]), reverse=True)[:5]
+        if not ranked:
+            send_tg("⚠️ تعذر سحب بيانات الرادار حالياً.", chat_id)
+            return
+        lines = ["🎯 <b>أقوى 5 فرص في البورصة المصرية الآن:</b>\n"]
+        for i, r in enumerate(ranked, 1):
+            lines.append(
+                f"{i}. <b>{r['symbol']}</b> ({r['name']})\n"
+                f"   السكور: <b>{r['score']}/100</b> | السعر: <b>{r['close']}</b> ({r['change']:+.1f}%)\n"
+                f"   السيولة: {r['rvol']}x | VWAP: {r['vwap_diff']:+.1f}% | SL: {r['sl']} | TP1: {r['tp1']}"
+            )
+        send_tg("\n".join(lines), chat_id)
+        return
 
-        if alert_code and msg_body:
-            dedup_key = f"{today_str}_{sym}_{alert_code}"
-            if dedup_key not in sent_keys:
-                if send_telegram(msg_body):
-                    log_alert_once(dedup_key, time_str, sent_keys)
+    # 4) إضافة / شراء سهم: شراء ABUK 100 54.5
+    if cmd in ["/buy", "شراء", "اضافة", "إضافة"] and len(parts) >= 4:
+        sym = parts[1].upper().replace(".CA", "")
+        try:
+            new_sh = int(float(parts[2]))
+            new_bp = float(parts[3])
+        except ValueError:
+            send_tg("⚠️ الصيغة الصحيحة: <code>شراء ABUK 100 54.5</code>", chat_id)
+            return
 
-    # 3. تقرير إغلاق الجلسة اليومي (02:32 - 02:50 ظهراً)
-    if (14 * 60 + 32) <= mins_now <= (14 * 60 + 50) and eod_lines:
-        eod_key = f"{today_str}_EOD_REPORT"
-        if eod_key not in sent_keys:
-            tot_net = (total_val - total_cost) - (total_val * FEE_RATE)
-            tot_pct = ((tot_net / total_cost) * 100.0) if total_cost > 0 else 0.0
-            header = [
-                f"🌙 <b>التقرير الختامي لمحفظتك ({today_str})</b>",
-                f"القيمة الحالية: <b>{total_val:,.0f} ج.م</b> | الصافي: <b>{tot_net:+,.0f} ج.م ({tot_pct:+.1f}%)</b>",
-                ""
-            ]
-            if send_telegram("\n".join(header + eod_lines)):
-                log_alert_once(eod_key, time_str, sent_keys)
+        # إذا كان السهم موجوداً نحسب متوسط الشراء المرجح
+        ok_ex, ex_data = sb_request("GET", f"portfolio?symbol=eq.{sym}&limit=1")
+        if ok_ex and ex_data:
+            old_sh = int(ex_data[0]["shares"])
+            old_bp = float(ex_data[0]["buy_price"])
+            total_sh = old_sh + new_sh
+            avg_bp = round(((old_sh * old_bp) + (new_sh * new_bp)) / total_sh, 2)
+        else:
+            total_sh, avg_bp = new_sh, new_bp
 
+        m = market_map.get(sym, {})
+        atr = m.get("atr", avg_bp * 0.025)
+        sl = round(max(0.01, avg_bp - 2.0 * atr), 2)
+        r_sh = max(0.01, avg_bp - sl)
+        tp1 = round(avg_bp + 1.618 * r_sh, 2)
+        tp2 = round(avg_bp + 2.618 * r_sh, 2)
+
+        ok_up, _ = sb_request(
+            "POST", "portfolio?on_conflict=symbol",
+            payload=[{
+                "symbol": sym, "shares": total_sh, "buy_price": avg_bp,
+                "stop_loss": sl, "tp1": tp1, "tp2": tp2,
+                "trailing_enabled": True, "trailing_stage": 0
+            }],
+            extra_headers={"Prefer": "resolution=merge-duplicates,return=representation"},
+        )
+        if ok_up:
+            send_tg(
+                f"✅ <b>تم حفظ {sym} ({EGX_NAMES.get(sym, sym)}) في محفظتك!</b>\n"
+                f"الكمية الكلية: <b>{total_sh}</b> | المتوسط: <b>{avg_bp} ج.م</b>\n"
+                f"🛑 الوقف: <b>{sl}</b> | 🎯 TP1: <b>{tp1}</b> | TP2: <b>{tp2}</b>",
+                chat_id,
+            )
+        else:
+            send_tg("❌ تعذر الحفظ في Supabase؛ تأكد من المفاتيح.", chat_id)
+        return
+
+    # 5) بيع / إغلاق صفقة: بيع ABUK 59.0
+    if cmd in ["/sell", "بيع", "اغلاق", "إغلاق"] and len(parts) >= 3:
+        sym = parts[1].upper().replace(".CA", "")
+        try:
+            sell_p = float(parts[2])
+        except ValueError:
+            send_tg("⚠️ الصيغة الصحيحة: <code>بيع ABUK 59.0</code>", chat_id)
+            return
+
+        ok_ex, ex_data = sb_request("GET", f"portfolio?symbol=eq.{sym}&limit=1")
+        if not ok_ex or not ex_data:
+            send_tg(f"⚠️ السهم <b>{sym}</b> غير موجود في محفظتك المفتوحة.", chat_id)
+            return
+
+        sh = int(ex_data[0]["shares"])
+        bp = float(ex_data[0]["buy_price"])
+        cost = sh * bp
+        proceeds = sh * sell_p
+        net_pnl = (proceeds - cost) - ((cost + proceeds) * FEE_RATE)
+        pnl_pct = (net_pnl / max(0.01, cost)) * 100.0
+
+        sb_request("POST", "closed_trades", payload=[{
+            "symbol": sym, "shares": sh, "buy_price": bp, "sell_price": sell_p,
+            "net_pnl": round(net_pnl, 2), "pnl_pct": round(pnl_pct, 2),
+            "closed_at": get_cairo_now().isoformat()
+        }])
+        sb_request("DELETE", f"portfolio?symbol=eq.{sym}")
+        send_tg(
+            f"💰 <b>تم إغلاق صفقة {sym} ({EGX_NAMES.get(sym, sym)})</b>\n"
+            f"الكمية: {sh} | الشراء: {bp} ⬅️ البيع: <b>{sell_p}</b>\n"
+            f"صافي النتيجة: <b>{net_pnl:+,.0f} ج.م ({pnl_pct:+.1f}%)</b>",
+            chat_id,
+        )
+        return
+
+    # 6) تأمين التعادل: تأمين ABUK
+    if cmd in ["/be", "تأمين", "تامين", "تعادل"] and len(parts) >= 2:
+        sym = parts[1].upper().replace(".CA", "")
+        ok_ex, ex_data = sb_request("GET", f"portfolio?symbol=eq.{sym}&limit=1")
+        if not ok_ex or not ex_data:
+            send_tg(f"⚠️ السهم <b>{sym}</b> غير موجود في محفظتك.", chat_id)
+            return
+        bp = float(ex_data[0]["buy_price"])
+        be_sl = round(bp * (1.0 + FEE_RATE * 2.0), 2)
+        sb_request("PATCH", f"portfolio?symbol=eq.{sym}", payload={"stop_loss": be_sl, "trailing_stage": 1})
+        send_tg(f"🛡️ <b>تم تأمين {sym} للتعادل!</b>\nوقف الخسارة الجديد: <b>{be_sl} ج.م</b>", chat_id)
+        return
+
+    # 7) الاستعلام عن سهم: سعر ABUK أو كتابة ABUK مباشرة
+    target_sym = None
+    if cmd in ["/price", "سعر", "تحليل", "فحص"] and len(parts) >= 2:
+        target_sym = parts[1].upper().replace(".CA", "")
+    elif re.fullmatch(r"[A-Za-z]{3,5}", cmd):
+        target_sym = cmd.upper()
+
+    if target_sym:
+        m = market_map.get(target_sym)
+        if not m:
+            send_tg(f"⚠️ الرمز <b>{target_sym}</b> غير متاح حالياً في بيانات البورصة.", chat_id)
+            return
+        vwap_st = "أعلى VWAP 🟢" if m["vwap_diff"] >= 0 else "أسفل VWAP 🔴"
+        send_tg(
+            f"📊 <b>{target_sym} — {m['name']}</b>\n"
+            f"💰 السعر اللحظي: <b>{m['close']} ج.م</b> ({m['change']:+.2f}%)\n"
+            f"⚡ التدفق: <b>{vwap_st}</b> ({m['vwap']} | {m['vwap_diff']:+.1f}%)\n"
+            f"💧 وتيرة السيولة: <b>{m['rvol']}x</b> | RSI15: <b>{m['rsi15']}</b>\n"
+            f"🎯 السكور الفني: <b>{m['score']}/100</b>\n"
+            f"🛑 الوقف (2×ATR): <b>{m['sl']}</b> | 🎯 TP1: <b>{m['tp1']}</b> | TP2: <b>{m['tp2']}</b>",
+            chat_id,
+        )
+        return
+
+    send_tg("🤔 لم أفهم الأمر. أرسل كلمة <b>مساعدة</b> لعرض قائمة الأوامر المتاحة.", chat_id)
+
+# ==========================================
+# حلقة المراقبة الآلية والوقف المتحرك
+# ==========================================
+def run_auto_monitor(market_map: dict):
+    today_str = get_cairo_now().strftime("%Y-%m-%d")
+    time_str = get_cairo_now().strftime("%H:%M")
+
+    ok_log, logs = sb_request("GET", f"tg_alerts_log?alert_key=like.{today_str}*")
+    sent_keys = {x["alert_key"] for x in logs} if (ok_log and isinstance(logs, list)) else set()
+
+    def send_once(key: str, msg: str):
+        if key not in sent_keys:
+            if send_tg(msg):
+                sent_keys.add(key)
+                sb_request("POST", "tg_alerts_log", payload=[{"alert_key": key, "sent_at": time_str}])
+
+    ok_p, portfolio = sb_request("GET", "portfolio?select=*")
+    if ok_p and isinstance(portfolio, list):
+        for item in portfolio:
+            sym = item["symbol"].upper().strip()
+            sh = int(item.get("shares", 0))
+            bp = float(item.get("buy_price", 0))
+            sl = float(item.get("stop_loss", 0))
+            tp1 = float(item.get("tp1", 0))
+            tp2 = float(item.get("tp2", 0))
+            tr_on = bool(item.get("trailing_enabled", True))
+            tr_stage = int(item.get("trailing_stage", 0))
+
+            m = market_map.get(sym)
+            if not m or sh <= 0 or bp <= 0:
+                continue
+
+            cp = m["close"]
+            atr = m["atr"]
+            if sl <= 0:
+                sl = round(max(0.01, bp - 2.0 * atr), 2)
+            r_u = max(0.01, bp - sl)
+            if tp1 <= 0:
+                tp1 = round(bp + 1.618 * r_u, 2)
+            if tp2 <= 0:
+                tp2 = round(bp + 2.618 * r_u, 2)
+
+            # الوقف المتحرك الآلي
+            updated = False
+            if tr_on:
+                be_p = round(bp * (1.0 + FEE_RATE * 2.0), 2)
+                if cp >= tp1 and tr_stage < 1 and be_p < cp:
+                    sl = max(sl, be_p)
+                    tr_stage = 1
+                    updated = True
+                    send_once(f"{today_str}_{sym}_TRAIL1", f"🛡️ <b>تأمين آلي ({sym}):</b> تحقق TP1 وتم رفع الوقف للتعادل (<b>{sl} ج.م</b>).")
+                if cp >= tp2:
+                    anchor = max(m["vwap"], m["ema20"])
+                    cand = round(min(cp - 0.5 * atr, anchor * 0.992), 2)
+                    if cand > sl * 1.003 and cand < cp:
+                        sl = cand
+                        tr_stage = 2
+                        updated = True
+                        send_once(f"{today_str}_{sym}_TRAIL2", f"🚀 <b>ملاحقة أرباح ({sym}):</b> تم رفع الوقف آلياً إلى <b>{sl} ج.م</b>.")
+
+            if updated:
+                sb_request("PATCH", f"portfolio?symbol=eq.{sym}", payload={"stop_loss": sl, "tp1": tp1, "tp2": tp2, "trailing_stage": tr_stage})
+
+            net_pnl = ((cp - bp) * sh) - (cp * sh * FEE_RATE)
+            dist_sl = ((cp - sl) / cp) * 100.0
+            dist_tp1 = ((tp1 - cp) / cp) * 100.0
+
+            if cp <= sl:
+                send_once(f"{today_str}_{sym}_HIT_SL", f"🚨 <b>كسر وقف الخسارة — {sym}</b>\nالسعر: <b>{cp}</b> | الوقف: <b>{sl}</b>")
+            elif 0 < dist_sl <= ALERT_BUFFER_PCT:
+                send_once(f"{today_str}_{sym}_NEAR_SL", f"⚠️ <b>قرب الوقف — {sym}</b>\nالسعر: <b>{cp}</b> (يبعد {dist_sl:.1f}% عن {sl})")
+            elif cp >= tp2:
+                send_once(f"{today_str}_{sym}_HIT_TP2", f"🏆 <b>تحقق TP2 — {sym}</b>\nالسعر: <b>{cp}</b> | الربح: <b>{net_pnl:+,.0f} ج.م</b>")
+            elif cp >= tp1:
+                send_once(f"{today_str}_{sym}_HIT_TP1", f"🎯 <b>تحقق TP1 — {sym}</b>\nالسعر: <b>{cp}</b> | الربح: <b>{net_pnl:+,.0f} ج.م</b>")
+            elif 0 < dist_tp1 <= ALERT_BUFFER_PCT:
+                send_once(f"{today_str}_{sym}_NEAR_TP1", f"🔔 <b>اقترب الهدف TP1 — {sym}</b>\nالسعر: <b>{cp}</b> (يبعد {dist_tp1:.1f}% عن {tp1})")
+
+    # تنبيهات فرص الحيتان (سكور 80+) أثناء الجلسة
+    is_open, _ = is_egx_market_open()
+    if is_open:
+        for sym, m in market_map.items():
+            if m["score"] >= 80:
+                send_once(
+                    f"{today_str}_WHALE_{sym}",
+                    f"🐋 <b>إشارة حيتان — {sym} ({m['name']})</b>\n"
+                    f"السكور: <b>{m['score']}/100</b> | السعر: <b>{m['close']}</b> | الوقف: <b>{m['sl']}</b> | TP1: <b>{m['tp1']}</b>"
+                )
+
+def main():
+    daemon_mode = "--loop" in sys.argv
+    last_monitor_ts = 0.0
+
+    while True:
+        market_map = fetch_egx_market()
+
+        # 1) فحص والرد على أي رسائل واردة على تليجرام
+        offset = get_tg_offset()
+        updates = fetch_tg_updates(offset)
+        for upd in updates:
+            uid = upd.get("update_id", 0)
+            msg = upd.get("message") or {}
+            text = msg.get("text", "")
+            sender_chat = str(msg.get("chat", {}).get("id", ""))
+            if text and sender_chat and (not TG_CHAT_ID or sender_chat == TG_CHAT_ID):
+                handle_command(text, sender_chat, market_map)
+            save_tg_offset(uid + 1)
+
+        # 2) تشغيل مراقب المحفظة والتنبيهات كل 3 دقائق
+        now_ts = time.time()
+        if (now_ts - last_monitor_ts) >= 180:
+            run_auto_monitor(market_map)
+            last_monitor_ts = now_ts
+
+        if not daemon_mode:
+            break
+        time.sleep(3)
 
 if __name__ == "__main__":
-    run()
+    main()
