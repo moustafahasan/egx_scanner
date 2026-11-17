@@ -1,5 +1,6 @@
 import os
 import re
+import io
 import json
 import math
 import time
@@ -7,7 +8,6 @@ import urllib.request
 import urllib.parse
 import xml.etree.ElementTree as ET
 from datetime import datetime, date, timedelta, timezone
-from thndr_parser import parse_thndr_files
 
 import streamlit as st
 import pandas as pd
@@ -17,10 +17,10 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 # ==========================================
-# إعدادات الصفحة والتصميم البصري الاحترافي (V10.0)
+# إعدادات الصفحة والتصميم البصري الداكن (V10.5)
 # ==========================================
 st.set_page_config(
-    page_title="EGX Whale Hunter Pro V10.0",
+    page_title="EGX Whale Hunter Pro V10.5",
     page_icon="🦅",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -33,21 +33,88 @@ st.markdown("""
     html, body, [class*="css"] {
         font-family: 'Cairo', sans-serif !important;
     }
-    .stApp {
-        background: radial-gradient(circle at top right, #0F172A 0%, #090D16 60%, #060911 100%);
-        color: #F8FAFC;
-        direction: rtl;
+
+    /* توحيد الخلفية الداكنة والاتجاه العربي RTL */
+    .stApp, [data-testid="stAppViewContainer"], [data-testid="stHeader"], [data-testid="stToolbar"] {
+        background-color: #0B0F19 !important;
+        color: #F8FAFC !important;
     }
-    .block-container {
+    .main .block-container, .block-container {
+        direction: rtl;
+        text-align: right;
         padding-top: 1.1rem;
         padding-bottom: 2.5rem;
         max-width: 1460px;
     }
 
+    /* تلوين جميع خانات الإدخال (نصوص وأرقام) بالداكن */
+    div[data-baseweb="input"], div[data-baseweb="base-input"], input, textarea {
+        background-color: #111827 !important;
+        color: #F8FAFC !important;
+        border-color: #334155 !important;
+        border-radius: 8px !important;
+    }
+    input::placeholder {
+        color: #64748B !important;
+    }
+
+    /* أزرار + و - داخل خانات الأرقام */
+    button[data-testid="stNumberInputStepDown"], button[data-testid="stNumberInputStepUp"] {
+        background-color: #1E293B !important;
+        color: #F8FAFC !important;
+        border-color: #334155 !important;
+    }
+    button[data-testid="stNumberInputStepDown"]:hover, button[data-testid="stNumberInputStepUp"]:hover {
+        background-color: #0284C7 !important;
+        color: #FFFFFF !important;
+    }
+
+    /* توضيح عناوين الخانات وخيارات الراديو والـ Checkbox */
+    label, label p, [data-testid="stWidgetLabel"] p, div[role="radiogroup"] label p, [data-testid="stCheckbox"] label p {
+        color: #CBD5E1 !important;
+        font-weight: 600 !important;
+    }
+
+    /* تنسيق الأزرار العادية والأساسية وأزرار التحميل */
+    .stButton > button, .stDownloadButton > button, .stLinkButton > a {
+        background-color: #1E293B !important;
+        color: #F8FAFC !important;
+        border: 1px solid #334155 !important;
+        border-radius: 10px !important;
+        font-weight: 700 !important;
+        transition: all 0.2s ease;
+    }
+    .stButton > button:hover, .stDownloadButton > button:hover, .stLinkButton > a:hover {
+        border-color: #38BDF8 !important;
+        color: #38BDF8 !important;
+        background-color: #16213A !important;
+    }
+    .stButton > button[kind="primary"] {
+        background: linear-gradient(135deg, #0284C7 0%, #0369A1 100%) !important;
+        color: #FFFFFF !important;
+        border: 1px solid #38BDF8 !important;
+    }
+    .stButton > button[kind="primary"]:hover {
+        background: linear-gradient(135deg, #0369A1 0%, #075985 100%) !important;
+        color: #FFFFFF !important;
+    }
+
+    /* القوائم المنسدلة والـ Expander وصندوق رفع الملفات */
+    [data-testid="stExpander"], div[data-baseweb="select"] > div, [data-testid="stFileUploaderDropzone"] {
+        background-color: #111827 !important;
+        color: #F8FAFC !important;
+        border-color: #26334D !important;
+        border-radius: 10px !important;
+    }
+    ul[data-baseweb="menu"] {
+        background-color: #111827 !important;
+        color: #F8FAFC !important;
+    }
+
     /* الهيدر الرئيسي */
     .hero-banner {
-        background: linear-gradient(135deg, rgba(15, 23, 42, 0.95) 0%, rgba(30, 41, 59, 0.9) 100%);
-        border: 1px solid rgba(56, 189, 248, 0.28);
+        background: linear-gradient(135deg, rgba(15, 23, 42, 0.96) 0%, rgba(30, 41, 59, 0.92) 100%);
+        border: 1px solid rgba(56, 189, 248, 0.3);
         border-right: 5px solid #38BDF8;
         border-radius: 16px;
         padding: 16px 22px;
@@ -63,7 +130,7 @@ st.markdown("""
     .hero-accent { color: #38BDF8; }
     .hero-sub { font-size: 13px; color: #94A3B8; margin-top: 3px; }
     .session-pill {
-        background: rgba(11, 15, 25, 0.85);
+        background: rgba(11, 15, 25, 0.9);
         border: 1px solid #38BDF8;
         color: #38BDF8;
         padding: 7px 15px;
@@ -72,10 +139,10 @@ st.markdown("""
         font-size: 13px;
     }
 
-    /* تصميم علامات التبويب (Tabs) الاحترافي */
+    /* تصميم علامات التبويب (Tabs) */
     .stTabs [data-baseweb="tab-list"] {
         gap: 8px;
-        background-color: rgba(19, 28, 49, 0.75);
+        background-color: rgba(19, 28, 49, 0.85);
         padding: 8px 10px;
         border-radius: 14px;
         border: 1px solid #26334D;
@@ -85,7 +152,7 @@ st.markdown("""
         height: 42px;
         background-color: transparent;
         border-radius: 10px;
-        color: #94A3B8;
+        color: #94A3B8 !important;
         font-weight: 700;
         font-size: 14px;
         padding: 0 16px;
@@ -93,8 +160,8 @@ st.markdown("""
         transition: all 0.2s ease;
     }
     .stTabs [data-baseweb="tab"]:hover {
-        background-color: rgba(56, 189, 248, 0.1);
-        color: #E2E8F0;
+        background-color: rgba(56, 189, 248, 0.12);
+        color: #F8FAFC !important;
         border-color: rgba(56, 189, 248, 0.3);
     }
     .stTabs [aria-selected="true"] {
@@ -274,6 +341,115 @@ def get_friendly_stock_name(sym: str, fallback_desc: str = "") -> str:
     if fallback_desc and fallback_desc.strip():
         return fallback_desc.strip()
     return f"شركة {clean} (البورصة المصرية)"
+
+# ==========================================
+# قارئ مستندات ثاندر المدمج (PDF / Excel / CSV)
+# ==========================================
+try:
+    from thndr_parser import parse_thndr_files
+except ImportError:
+    _ARABIC_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
+
+    def _norm_thndr_txt(txt: str) -> str:
+        return txt.translate(_ARABIC_DIGITS).replace(",", "").replace("،", "")
+
+    def _match_thndr_sym(line_or_doc: str, known_names: dict) -> str:
+        upper_txt = line_or_doc.upper()
+        for sym in known_names.keys():
+            if re.search(rf"(?<![A-Z0-9]){re.escape(sym)}(?:\.CA)?(?![A-Z0-9])", upper_txt):
+                return sym
+        for sym, ar_name in known_names.items():
+            clean_ar = re.sub(r"\(.*?\)", "", ar_name).strip()
+            if len(clean_ar) >= 5 and clean_ar in line_or_doc:
+                return sym
+        m_ca = re.search(r"\b([A-Z]{3,5})\.CA\b", upper_txt)
+        return m_ca.group(1) if m_ca else ""
+
+    def parse_thndr_files(uploaded_files, known_names: dict) -> list:
+        extracted_ops = []
+        for up in uploaded_files:
+            fname = up.name.lower()
+            if fname.endswith(".pdf"):
+                try:
+                    from pypdf import PdfReader
+                    reader = PdfReader(io.BytesIO(up.read()))
+                    full_text = "\n".join([page.extract_text() or "" for page in reader.pages])
+                    norm_txt = _norm_thndr_txt(full_text)
+                    lines = [ln.strip() for ln in norm_txt.splitlines() if ln.strip()]
+
+                    doc_side = "شراء (Buy)"
+                    if re.search(r"\b(SELL|SALE)\b|بيع|أمر بيع|عملية بيع", norm_txt, re.IGNORECASE):
+                        if not re.search(r"\b(BUY|PURCHASE)\b|شراء|أمر شراء", norm_txt, re.IGNORECASE):
+                            doc_side = "بيع (Sell)"
+
+                    doc_sym = _match_thndr_sym(norm_txt, known_names)
+                    found_in_lines = False
+                    for ln in lines:
+                        ln_sym = _match_thndr_sym(ln, known_names)
+                        if not ln_sym:
+                            continue
+                        ln_side = doc_side
+                        if re.search(r"\bSELL\b|بيع", ln, re.IGNORECASE):
+                            ln_side = "بيع (Sell)"
+                        elif re.search(r"\bBUY\b|شراء", ln, re.IGNORECASE):
+                            ln_side = "شراء (Buy)"
+
+                        nums = [float(x) for x in re.findall(r"\b\d+(?:\.\d+)?\b", ln)]
+                        valid_nums = [n for n in nums if 0.05 <= n <= 5000000 and n not in [2024, 2025, 2026, 2027]]
+                        if len(valid_nums) >= 2:
+                            int_cands = [n for n in valid_nums if float(n).is_integer() and 1 <= n <= 1000000]
+                            price_cands = [n for n in valid_nums if not float(n).is_integer() and 0.05 <= n <= 5000]
+                            qty = int(int_cands[0]) if int_cands else int(valid_nums[0])
+                            price = float(price_cands[0]) if price_cands else float(valid_nums[1])
+                            if qty > 0 and price > 0:
+                                extracted_ops.append({
+                                    "المصدر": up.name, "العملية": ln_side, "الرمز": ln_sym,
+                                    "اسم الشركة": known_names.get(ln_sym, ln_sym),
+                                    "الكمية": qty, "السعر": round(price, 2),
+                                })
+                                found_in_lines = True
+
+                    if not found_in_lines and doc_sym:
+                        m_qty = re.search(r"(?:Quantity|Qty|Shares|الكمية|عدد الأسهم)\s*[:\-]?\s*(\d+)", norm_txt, re.IGNORECASE)
+                        m_prc = re.search(r"(?:Execution Price|Price|Avg Price|سعر التنفيذ|السعر)\s*[:\-]?\s*(\d+(?:\.\d+)?)", norm_txt, re.IGNORECASE)
+                        qty = int(m_qty.group(1)) if m_qty else 100
+                        price = float(m_prc.group(1)) if m_prc else 0.0
+                        if price > 0:
+                            extracted_ops.append({
+                                "المصدر": up.name, "العملية": doc_side, "الرمز": doc_sym,
+                                "اسم الشركة": known_names.get(doc_sym, doc_sym),
+                                "الكمية": qty, "السعر": round(price, 2),
+                            })
+                except Exception:
+                    pass
+            elif fname.endswith((".csv", ".xlsx", ".xls")):
+                try:
+                    df_in = pd.read_csv(up) if fname.endswith(".csv") else pd.read_excel(up)
+                    for _, row in df_in.iterrows():
+                        row_str = " ".join([str(v) for v in row.values if pd.notna(v)])
+                        sym = _match_thndr_sym(row_str, known_names)
+                        if not sym:
+                            continue
+                        side = "بيع (Sell)" if re.search(r"\bSELL\b|بيع", row_str, re.IGNORECASE) else "شراء (Buy)"
+                        qty, price = 0, 0.0
+                        for col in df_in.columns:
+                            cl = str(col).lower()
+                            val = row[col]
+                            if pd.isna(val):
+                                continue
+                            if any(k in cl for k in ["qty", "quantity", "shares", "كمية", "الكمية"]):
+                                qty = int(float(str(val).replace(",", "")))
+                            elif any(k in cl for k in ["price", "avg", "سعر", "السعر"]):
+                                price = float(str(val).replace(",", ""))
+                        if qty > 0 and price > 0:
+                            extracted_ops.append({
+                                "المصدر": up.name, "العملية": side, "الرمز": sym,
+                                "اسم الشركة": known_names.get(sym, sym),
+                                "الكمية": qty, "السعر": round(price, 2),
+                            })
+                except Exception:
+                    pass
+        return extracted_ops
 
 # ==========================================
 # التوقيت وحالة جلسة البورصة المصرية
@@ -530,7 +706,7 @@ def detect_telegram_chat_id(token: str):
         return None, f"خطأ: {e}"
 
 # ==========================================
-# سحب بيانات البورصة المصرية الحية من TradingView
+# سحب بيانات البورصة المصرية الحية من TradingView (شاملة Bid/Ask Size)
 # ==========================================
 @st.cache_data(ttl=120, show_spinner=False)
 def fetch_full_egx_tv_scanner(nonce: int = 0):
@@ -540,7 +716,7 @@ def fetch_full_egx_tv_scanner(nonce: int = 0):
         "average_volume_10d_calc", "average_volume_30d_calc", "ATR",
         "EMA20", "EMA50", "EMA200", "RSI", "MACD.macd", "MACD.signal",
         "VWAP", "RSI|15", "MACD.macd|15", "MACD.signal|15",
-        "bid", "ask", "high", "low", "open", "Perf.1M"
+        "bid", "ask", "bid_size", "ask_size", "high", "low", "open", "Perf.1M"
     ]
     body = json.dumps({
         "filter": [{"left": "type", "operation": "in_range", "right": ["stock", "dr", "fund"]}],
@@ -593,6 +769,8 @@ def fetch_full_egx_tv_scanner(nonce: int = 0):
                 "macds15": float(rec.get("MACD.signal|15") or 0.0),
                 "bid": float(rec.get("bid") or 0.0),
                 "ask": float(rec.get("ask") or 0.0),
+                "bid_size": float(rec.get("bid_size") or 0.0),
+                "ask_size": float(rec.get("ask_size") or 0.0),
                 "high": float(rec.get("high") or close_p),
                 "low": float(rec.get("low") or close_p),
                 "open": float(rec.get("open") or close_p),
@@ -626,7 +804,7 @@ def analyze_intraday_flow(q: dict, fallback_close: float = 0.0, session_progress
     rel_vol = (vol / expected_vol) if expected_vol > 0 else 1.0
 
     spread_pct = ((ask - bid) / close * 100.0) if (bid > 0 and ask > bid and close > 0) else 0.0
-    ba_pressure = f"طلب {bid:.2f} / عرض {ask:.2f}" if (bid > 0 and ask > 0) else "غير متاح لحظياً"
+    ba_pressure = f"طلب {bid:.2f} / عرض {ask:.2f}" if (bid > 0 and ask > 0) else "غير متاح خارج الجلسة"
 
     f_score = 0
     reasons = []
@@ -1327,7 +1505,7 @@ sb_badge = "☁️ سحابة Supabase متصلة" if cloud_connected else "💾
 st.markdown(f"""
 <div class="hero-banner">
     <div>
-        <div class="hero-title">🦅 <span class="hero-accent">EGX WHALE HUNTER</span> PRO <span style="font-size:13px;color:#FACC15;">V10.0</span></div>
+        <div class="hero-title">🦅 <span class="hero-accent">EGX WHALE HUNTER</span> PRO <span style="font-size:13px;color:#FACC15;">V10.5</span></div>
         <div class="hero-sub">🌐 تغطية ({len(raw_egx_tv_map)} سهم) • {sb_badge} • 💼 محفظتي ({len(portfolio_clean_syms)}) • {tg_badge} • آخر تحديث: {last_live_sync}</div>
     </div>
     <div class="session-pill">{session_info['badge']}</div>
@@ -1337,7 +1515,7 @@ st.markdown(f"""
 top_bar1, top_bar2, top_bar3 = st.columns([2.2, 1, 1])
 with top_bar1:
     if not cloud_connected:
-        st.caption("⚠️ **ملاحظة:** السحابة غير مربوطة في `Secrets` حالياً؛ اربطها من تبويب **⚙️ الإعدادات** لحفظ أسهمك بشكل دائم.")
+        st.caption("⚠️ **ملاحظة:** السحابة غير مربوطة حالياً؛ افحص الاتصال من تبويب **⚙️ الإعدادات** لحفظ أسهمك بشكل دائم.")
     else:
         st.caption("✅ **المزامنة السحابية نشطة:** جميع مراكزك وصفقاتك محفوظة بأمان على سحابة Supabase.")
 with top_bar2:
@@ -1593,7 +1771,7 @@ with tab_radar:
         st.warning("⚠️ لا توجد أسهم تطابق شروط الفلتر الحالية؛ يمكنك تقليل الحد الأدنى للسكور من تبويب **⚙️ الإعدادات**.")
 
 # ==============================================================================
-# التبويب 2: محفظتي وإدارة المخاطر (مقسمة إلى 3 علامات تبويب فرعية نظيفة)
+# التبويب 2: محفظتي وإدارة المخاطر (3 علامات تبويب فرعية نظيفة)
 # ==============================================================================
 with tab_portfolio:
     if st.session_state.get("last_port_msg"):
@@ -1601,17 +1779,6 @@ with tab_portfolio:
 
     for lvl, msg in active_alerts:
         st.markdown(f'<div class="alert-box-{lvl}">{msg}</div>', unsafe_allow_html=True)
-
-    if not has_permanent_secrets():
-        with st.expander("📌 تنبيه مهم: كيف تثبّت أسهم محفظتك للأبد حتى لا تختفي عند تحديث الكود؟ (اضغط هنا)", expanded=(len(portfolio_rows) == 0)):
-            st.markdown("""
-            **سبب اختفاء الأسهم عند تحديث الكود:** سيرفرات Streamlit Cloud تمسح الملفات المؤقتة مع كل تحديث على GitHub ما لم تكن مفاتيح `Supabase` محفوظة في **Secrets**.
-            
-            **خطوات التثبيت الدائم (مرة واحدة فقط):**
-            1. افتح لوحة تحكم تطبيقك على **Streamlit Cloud** ← اضغط **Settings** ← اختر **Secrets**.
-            2. الصق الكود التالي ببيانات مشروعك واضغط **Save**:
-            """)
-            st.code('SUPABASE_URL = "https://YOUR_PROJECT_ID.supabase.co"\nSUPABASE_KEY = "YOUR_SUPABASE_KEY"\nTELEGRAM_BOT_TOKEN = "YOUR_BOT_TOKEN"\nTELEGRAM_CHAT_ID = "YOUR_CHAT_ID"', language="toml")
 
     total_net_pnl = total_port_val - total_port_cost - (total_port_val * fee_rate)
     total_pnl_pct = ((total_net_pnl / total_port_cost) * 100.0) if total_port_cost > 0 else 0.0
@@ -1626,14 +1793,14 @@ with tab_portfolio:
 
     ptab_open, ptab_add, ptab_history = st.tabs([
         f"📋 مراكزي المفتوحة والتحكم الآلي ({len(portfolio_rows)})",
-        "➕ إضافة / تعديل سهم (مع التأكيد الفوري)",
+        "➕ إضافة سهم / استيراد فواتير ثاندر",
         f"📜 سجل الصفقات المغلقة والنسخ الاحتياطي ({len(closed_trades)})"
     ])
 
     # --- فرعي 2.1: المراكز المفتوحة ---
     with ptab_open:
         if not portfolio_rows:
-            st.info("📌 محفظتك فارغة حالياً؛ انتقل إلى تبويب **➕ إضافة / تعديل سهم** لإضافة أسهمك أو استعادتها من النسخة الاحتياطية.")
+            st.info("📌 محفظتك فارغة حالياً؛ انتقل إلى تبويب **➕ إضافة سهم / استيراد فواتير ثاندر** لإضافة أسهمك يدوياً أو برفع فواتير ثاندر.")
         else:
             if st.button("📲 إرسال تقرير محفظتي اللحظي إلى تليجرام", use_container_width=True):
                 if not tg_token or not tg_chat_id:
@@ -1696,7 +1863,6 @@ with tab_portfolio:
                     st.session_state["last_port_msg"] = f"✅ تم إغلاق صفقة {port_sel} ({p_item['اسم الشركة']}) بصافي {n_res:+,.0f} ج.م ({p_res:+.1f}%)!"
                     st.rerun()
 
-            # شارت المركز المفتوح
             df_ph = fetch_single_stock_history(f"{port_sel}.CA")
             if not df_ph.empty:
                 sub_p = df_ph.tail(90)
@@ -1708,7 +1874,7 @@ with tab_portfolio:
                 fig_p.update_layout(title=f"📊 مستويات مركزك في {port_sel} ({p_item['اسم الشركة']})", height=420, xaxis_rangeslider_visible=False, template="plotly_dark", paper_bgcolor="#0B0F19", plot_bgcolor="#131C31", margin=dict(l=10, r=10, t=40, b=10))
                 st.plotly_chart(fig_p, use_container_width=True)
 
-    # --- فرعي 2.2: إضافة سهم جديد مع التحقق الفوري ---
+    # --- فرعي 2.2: إضافة سهم جديد + استيراد مستندات ثاندر ---
     with ptab_add:
         st.markdown("#### ➕ إضافة سهم جديد أو تعديل كمية/سعر سهم حالي")
         if st.session_state.pop("clear_add_sym", False):
@@ -1775,7 +1941,8 @@ with tab_portfolio:
                 st.session_state["last_port_msg"] = f"✅ تم حفظ سهم ({clean_in} — {saved_name}) بنجاح ({sv_status})!"
                 st.session_state["clear_add_sym"] = True
                 st.rerun()
-                st.divider()
+
+        st.divider()
         st.markdown("#### 📄 استيراد تلقائي من مستندات ثاندر (Thndr PDF / Excel / CSV)")
         thndr_files = st.file_uploader(
             "📎 ارفع فاتورة أو عدة فواتير تنفيذ من ثاندر (PDF) أو كشف حساب (Excel / CSV):",
@@ -1808,9 +1975,7 @@ with tab_portfolio:
                                 sell_qty = min(ex_sh, qty_o)
                                 record_closed_trade(sym_o, sell_qty, ex_bp, prc_o, fee_rate)
                                 if ex_sh > sell_qty:
-                                    upsert_portfolio_item({
-                                        **ex_item, "shares": ex_sh - sell_qty
-                                    })
+                                    upsert_portfolio_item({**ex_item, "shares": ex_sh - sell_qty})
                                 applied_cnt += 1
                         else:
                             ex_item = next((x for x in my_portfolio if x["symbol"].upper() == sym_o), None)
@@ -1819,9 +1984,7 @@ with tab_portfolio:
                                 old_bp = float(ex_item["buy_price"])
                                 tot_sh = old_sh + qty_o
                                 avg_bp = round(((old_sh * old_bp) + (qty_o * prc_o)) / tot_sh, 2)
-                                upsert_portfolio_item({
-                                    **ex_item, "shares": tot_sh, "buy_price": avg_bp
-                                })
+                                upsert_portfolio_item({**ex_item, "shares": tot_sh, "buy_price": avg_bp})
                             else:
                                 s_inf = all_analyzed_map.get(sym_o, {})
                                 atr_v = s_inf.get("ATR14", prc_o * 0.025)
@@ -1908,7 +2071,6 @@ with tab_lab:
         selected_data = all_analyzed_map[selected_symbol]
         chg_s = selected_data["التغير %"]
 
-        # بطاقة ملخص السهم المختار في أعلى المختبر
         st.markdown(f"""
         <div class="stock-header-strip">
             <div>
@@ -1925,9 +2087,8 @@ with tab_lab:
         </div>
         """, unsafe_allow_html=True)
 
-        # 10 تبويبات مستقلة لكل مدرسة تحليل
         t_flow, t_smc, t_wyk, t_cpr, t_harm, t_ew, t_tech, t_fund, t_gann, t_news = st.tabs([
-            "⚡ التدفق اللحظي وعمق السوق",
+            "⚡ التدفق اللحظي وعمق السيولة",
             "🏦 الأموال الذكية و ICT",
             "🐋 وايكوف و PVSRA",
             "🎯 CPR وبروفايل السيولة",
@@ -1939,7 +2100,7 @@ with tab_lab:
             "📰 الرادار الخبري"
         ])
 
-        # 1) التدفق اللحظي وعمق السوق
+        # 1) التدفق اللحظي وعمق السيولة الأوتوماتيكي 100%
         with t_flow:
             flow = selected_data["intraday_flow"]
             tv_r = selected_data.get("tv_raw", {})
@@ -1949,7 +2110,7 @@ with tab_lab:
             fk3.markdown(f'<div class="kpi-card"><div class="kpi-label">⏱️ زخم 15 دقيقة (RSI)</div><div class="kpi-val txt-cyan">{flow["rsi15"]}</div></div>', unsafe_allow_html=True)
             fk4.markdown(f'<div class="kpi-card" style="border-top-color:#FACC15;"><div class="kpi-label">💧 وتيرة السيولة الآن</div><div class="kpi-val txt-gold">{flow["rel_vol"]}x</div></div>', unsafe_allow_html=True)
             st.write("")
-            fl1, fl2 = st.columns([1.2, 1])
+            fl1, fl2 = st.columns([1.15, 1])
             with fl1:
                 reasons_html = "".join([f"<li style='margin-bottom:6px;'>{x}</li>" for x in flow["reasons"]])
                 st.markdown(f"""
@@ -1966,21 +2127,49 @@ with tab_lab:
                 </div>
                 """, unsafe_allow_html=True)
             with fl2:
-                st.markdown('<div class="pro-card" style="border-right-color:#FACC15;"><h4 class="txt-gold" style="margin:0;">📖 حاسبة عمق السوق (Order Book Imbalance)</h4></div>', unsafe_allow_html=True)
-                ob1, ob2 = st.columns(2)
-                bid_q = ob1.number_input("🟢 إجمالي كمية الطلبات (Bid):", min_value=0, value=150000, step=10000, key=f"bq_{selected_symbol}")
-                ask_q = ob2.number_input("🔴 إجمالي كمية العروض (Ask):", min_value=0, value=80000, step=10000, key=f"aq_{selected_symbol}")
-                wall_q = st.number_input("🧱 أكبر كمية معلقة على سعر واحد (لكشف التلاعب):", min_value=0, value=0, step=10000, key=f"wq_{selected_symbol}")
-                if (bid_q + ask_q) > 0:
-                    imb = ((bid_q - ask_q) / (bid_q + ask_q)) * 100.0
-                    avg_v10 = tv_r.get("avg_vol10", 0.0)
-                    spoof_txt = "<p class='txt-gold'>⚠️ <b>جدار ضخم (Spoofing محتمل):</b> الكمية تمثل ≥25% من متوسط تداول السهم اليومي.</p>" if (wall_q > 0 and avg_v10 > 0 and wall_q >= avg_v10 * 0.25) else ""
+                bid_sz = float(tv_r.get("bid_size") or 0.0)
+                ask_sz = float(tv_r.get("ask_size") or 0.0)
+                tot_vol = float(tv_r.get("volume") or 0.0)
+                clv_ratio = flow["clv_pct"] / 100.0
+
+                if (bid_sz + ask_sz) > 0:
+                    imb_auto = ((bid_sz - ask_sz) / (bid_sz + ask_sz)) * 100.0
                     st.markdown(f"""
-                    <div class="pro-card">
-                        <p class="txt-white"><b>نسبة اختلال العمق:</b> <span class="{'txt-green' if imb>=0 else 'txt-red'}" style="font-size:17px;font-weight:bold;">{imb:+.1f}%</span> (نسبة الطلب/العرض: {bid_q/max(1,ask_q):.2f}x)</p>
-                        {spoof_txt}
+                    <div class="pro-card" style="border-right-color:#FACC15;">
+                        <h4 class="txt-gold" style="margin-top:0;">📖 عمق أفضل طلب وعرض (سحب تلقائي)</h4>
+                        <p class="txt-white">🟢 كمية الطلب (Bid Size): <b>{bid_sz:,.0f}</b> &nbsp;|&nbsp; 🔴 كمية العرض (Ask Size): <b>{ask_sz:,.0f}</b></p>
+                        <p class="txt-white" style="margin-bottom:0;"><b>نسبة التفوق اللحظي:</b> <span class="{'txt-green' if imb_auto>=0 else 'txt-red'}" style="font-size:18px;font-weight:900;">{imb_auto:+.1f}%</span></p>
                     </div>
                     """, unsafe_allow_html=True)
+
+                buy_vol_est = tot_vol * clv_ratio
+                sell_vol_est = tot_vol * (1.0 - clv_ratio)
+                net_delta = buy_vol_est - sell_vol_est
+                delta_pct = ((buy_vol_est - sell_vol_est) / max(1.0, tot_vol)) * 100.0
+                buy_bar_w = max(5, min(95, int(round(clv_ratio * 100))))
+                delta_verdict = (
+                    "🟢 سيطرة شرائية منفذة (تجميع مؤسسي حقيقي)"
+                    if delta_pct >= 15 else
+                    ("🔴 ضغط بيعي منفذ (تصريف)" if delta_pct <= -15 else "🟡 توازن بين المشتري والبائع")
+                )
+
+                st.markdown(f"""
+                <div class="pro-card" style="border-right-color:#38BDF8;">
+                    <h4 class="txt-cyan" style="margin-top:0;">⚖️ صافي التدفق المنفذ (Order Flow Delta — أوتوماتيك)</h4>
+                    <p class="txt-muted" style="font-size:12px;">تحليل تلقائي لحجم السيولة المنفذة فعلياً على العرض مقابل الطلب دون أي إدخال يدوي:</p>
+                    <div style="display:flex;justify-content:space-between;font-size:13px;font-weight:700;margin-bottom:4px;">
+                        <span class="txt-green">🟢 شراء منفذ: {buy_vol_est:,.0f} ({buy_bar_w}%)</span>
+                        <span class="txt-red">🔴 بيع منفذ: {sell_vol_est:,.0f} ({100-buy_bar_w}%)</span>
+                    </div>
+                    <div style="width:100%;height:10px;background:#EF4444;border-radius:999px;overflow:hidden;margin-bottom:10px;">
+                        <div style="width:{buy_bar_w}%;height:100%;background:#22C55E;"></div>
+                    </div>
+                    <p class="txt-white">📊 صافي الدلتا (Net Delta): <b class="{'txt-green' if net_delta>=0 else 'txt-red'}">{net_delta:+,.0f} سهم ({delta_pct:+.1f}%)</b></p>
+                    <div style="background:#0B0F19;padding:9px 12px;border-radius:8px;">
+                        <b>الخلاصة اللحظية:</b> {delta_verdict}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
 
         # 2) الأموال الذكية و ICT
         with t_smc:
@@ -2331,6 +2520,10 @@ create table if not exists tg_alerts_log (
   alert_key text primary key,
   sent_at text
 );
+
+alter table portfolio disable row level security;
+alter table closed_trades disable row level security;
+alter table tg_alerts_log disable row level security;
             """, language="sql")
 
         st.divider()
@@ -2354,7 +2547,7 @@ create table if not exists tg_alerts_log (
         st.session_state["cfg_tg_port"] = st.checkbox("🔔 إرسال تنبيهات المحفظة تلقائياً", value=tg_auto_port)
         st.session_state["cfg_tg_whales"] = st.checkbox("🐋 تنبيه صفقات الحيتان (سكور 80+)", value=tg_auto_whales)
         if st.button("🧪 إرسال رسالة تجريبية لتليجرام", use_container_width=True):
-            ok_t, msg_t = send_telegram_message(tg_t_in, tg_c_in, "🦅 <b>EGX Whale Hunter Pro V10.0</b>\n✅ الواجهة الاحترافية ونظام التنبيهات السحابي جاهزان!")
+            ok_t, msg_t = send_telegram_message(tg_t_in, tg_c_in, "🦅 <b>EGX Whale Hunter Pro V10.5</b>\n✅ النظام السحابي، الألوان الداكنة، وتحليل التدفق الأوتوماتيكي تعمل بنجاح!")
             st.success("✅ وصلت الرسالة لتليجرام!") if ok_t else st.error(f"❌ {msg_t}")
 
     with set_c2:
