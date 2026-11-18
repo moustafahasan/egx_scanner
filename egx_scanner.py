@@ -1061,6 +1061,86 @@ def evaluate_smart_stop_loss(sym: str, curr_p: float, sl: float, buy_p: float, f
 
 
 
+def run_simple_backtest(df, capital=100000.0, risk_pct=1.5, fee_rate=0.0016):
+    if df is None or len(df) < 60:
+        return {"trades": [], "equity": [], "metrics": {}}
+    d = df.copy()
+    d["RVOL"] = d["Volume"] / d["VolSMA20"].replace(0, float("nan"))
+    trades = []
+    equity = [capital]
+    cash = capital
+    pos = None
+    for i in range(30, len(d)):
+        row = d.iloc[i]
+        close = float(row["Close"])
+        ema20 = float(row["EMA20"])
+        ema50 = float(row["EMA50"])
+        atr = float(row["ATR14"]) if "ATR14" in d.columns else close * 0.025
+        # fetch atr from df if present
+        if "ATR" in d.columns:
+            atr = float(row["ATR"])
+        rvol = float(row["RVOL"]) if (row["RVOL"] == row["RVOL"]) else 1.0
+        date = d.index[i]
+        if pos is None:
+            if close > ema20 > ema50 and rvol >= 1.2:
+                sl = max(0.01, close - 2.0 * atr)
+                r_u = max(0.01, close - sl)
+                tp1 = close + 1.618 * r_u
+                risk_amt = cash * (risk_pct / 100.0)
+                shares = int(risk_amt // r_u) if r_u > 0 else 0
+                if shares > 0:
+                    pos = {"entry": close, "shares": shares, "sl": sl, "tp1": tp1, "date": date, "cost": shares * close}
+        else:
+            hi = float(row["High"])
+            lo = float(row["Low"])
+            exit_p = None
+            reason = ""
+            if lo <= pos["sl"]:
+                exit_p = pos["sl"]
+                reason = "SL"
+            elif hi >= pos["tp1"]:
+                exit_p = pos["tp1"]
+                reason = "TP1"
+            elif close < ema20:
+                exit_p = close
+                reason = "EMA20 break"
+            if exit_p is not None:
+                proceeds = pos["shares"] * exit_p
+                fees = (pos["cost"] + proceeds) * fee_rate
+                pnl = proceeds - pos["cost"] - fees
+                cash += pnl
+                trades.append({"entry_date": str(pos["date"])[:10], "exit_date": str(date)[:10], "entry": round(pos["entry"], 2), "exit": round(exit_p, 2), "shares": pos["shares"], "pnl": round(pnl, 2), "reason": reason})
+                equity.append(cash)
+                pos = None
+    if pos is not None:
+        last_close = float(d["Close"].iloc[-1])
+        proceeds = pos["shares"] * last_close
+        fees = (pos["cost"] + proceeds) * fee_rate
+        pnl = proceeds - pos["cost"] - fees
+        cash += pnl
+        trades.append({"entry_date": str(pos["date"])[:10], "exit_date": str(d.index[-1])[:10], "entry": round(pos["entry"], 2), "exit": round(last_close, 2), "shares": pos["shares"], "pnl": round(pnl, 2), "reason": "EOD"})
+        equity.append(cash)
+    wins = [t for t in trades if t["pnl"] > 0]
+    losses = [t for t in trades if t["pnl"] <= 0]
+    total_pnl = sum(t["pnl"] for t in trades)
+    wr = (len(wins) / len(trades) * 100) if trades else 0.0
+    pf = (sum(t["pnl"] for t in wins) / abs(sum(t["pnl"] for t in losses))) if (losses and sum(t["pnl"] for t in losses) != 0) else 0.0
+    maxdd = 0.0
+    peak = equity[0] if equity else capital
+    for v in equity:
+        if v > peak:
+            peak = v
+        dd = peak - v
+        if dd > maxdd:
+            maxdd = dd
+    metrics = {
+        "trades": len(trades), "wins": len(wins), "losses": len(losses),
+        "win_rate": round(wr, 1), "profit_factor": round(pf, 2),
+        "total_pnl": round(total_pnl, 2), "final_equity": round(cash, 2),
+        "max_drawdown": round(maxdd, 2), "return_pct": round((cash - capital) / capital * 100, 2),
+    }
+    return {"trades": trades, "equity": equity, "metrics": metrics}
+
 def score_stock_from_tv(q: dict, market_median_perf1m: float, capital: float, risk_pct: float, fee_rate: float, session_progress: float) -> dict:
     sym = q["symbol"]
     close = q["close"]
@@ -3050,84 +3130,4 @@ if live_auto:
     st.session_state["force_cloud_sync"] = True
     fetch_full_egx_tv_scanner.clear()
     st.rerun()
-
-def run_simple_backtest(df, capital=100000.0, risk_pct=1.5, fee_rate=0.0016):
-    if df is None or len(df) < 60:
-        return {"trades": [], "equity": [], "metrics": {}}
-    d = df.copy()
-    d["RVOL"] = d["Volume"] / d["VolSMA20"].replace(0, float("nan"))
-    trades = []
-    equity = [capital]
-    cash = capital
-    pos = None
-    for i in range(30, len(d)):
-        row = d.iloc[i]
-        close = float(row["Close"])
-        ema20 = float(row["EMA20"])
-        ema50 = float(row["EMA50"])
-        atr = float(row["ATR14"]) if "ATR14" in d.columns else close * 0.025
-        # fetch atr from df if present
-        if "ATR" in d.columns:
-            atr = float(row["ATR"])
-        rvol = float(row["RVOL"]) if (row["RVOL"] == row["RVOL"]) else 1.0
-        date = d.index[i]
-        if pos is None:
-            if close > ema20 > ema50 and rvol >= 1.2:
-                sl = max(0.01, close - 2.0 * atr)
-                r_u = max(0.01, close - sl)
-                tp1 = close + 1.618 * r_u
-                risk_amt = cash * (risk_pct / 100.0)
-                shares = int(risk_amt // r_u) if r_u > 0 else 0
-                if shares > 0:
-                    pos = {"entry": close, "shares": shares, "sl": sl, "tp1": tp1, "date": date, "cost": shares * close}
-        else:
-            hi = float(row["High"])
-            lo = float(row["Low"])
-            exit_p = None
-            reason = ""
-            if lo <= pos["sl"]:
-                exit_p = pos["sl"]
-                reason = "SL"
-            elif hi >= pos["tp1"]:
-                exit_p = pos["tp1"]
-                reason = "TP1"
-            elif close < ema20:
-                exit_p = close
-                reason = "EMA20 break"
-            if exit_p is not None:
-                proceeds = pos["shares"] * exit_p
-                fees = (pos["cost"] + proceeds) * fee_rate
-                pnl = proceeds - pos["cost"] - fees
-                cash += pnl
-                trades.append({"entry_date": str(pos["date"])[:10], "exit_date": str(date)[:10], "entry": round(pos["entry"], 2), "exit": round(exit_p, 2), "shares": pos["shares"], "pnl": round(pnl, 2), "reason": reason})
-                equity.append(cash)
-                pos = None
-    if pos is not None:
-        last_close = float(d["Close"].iloc[-1])
-        proceeds = pos["shares"] * last_close
-        fees = (pos["cost"] + proceeds) * fee_rate
-        pnl = proceeds - pos["cost"] - fees
-        cash += pnl
-        trades.append({"entry_date": str(pos["date"])[:10], "exit_date": str(d.index[-1])[:10], "entry": round(pos["entry"], 2), "exit": round(last_close, 2), "shares": pos["shares"], "pnl": round(pnl, 2), "reason": "EOD"})
-        equity.append(cash)
-    wins = [t for t in trades if t["pnl"] > 0]
-    losses = [t for t in trades if t["pnl"] <= 0]
-    total_pnl = sum(t["pnl"] for t in trades)
-    wr = (len(wins) / len(trades) * 100) if trades else 0.0
-    pf = (sum(t["pnl"] for t in wins) / abs(sum(t["pnl"] for t in losses))) if (losses and sum(t["pnl"] for t in losses) != 0) else 0.0
-    maxdd = 0.0
-    peak = equity[0] if equity else capital
-    for v in equity:
-        if v > peak:
-            peak = v
-        dd = peak - v
-        if dd > maxdd:
-            maxdd = dd
-    metrics = {
-        "trades": len(trades), "wins": len(wins), "losses": len(losses),
-        "win_rate": round(wr, 1), "profit_factor": round(pf, 2),
-        "total_pnl": round(total_pnl, 2), "final_equity": round(cash, 2),
-        "max_drawdown": round(maxdd, 2), "return_pct": round((cash - capital) / capital * 100, 2),
-    }
-    return {"trades": trades, "equity": equity, "metrics": metrics}
 
