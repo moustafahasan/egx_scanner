@@ -1466,6 +1466,23 @@ def fetch_fundamental_analysis(ticker: str) -> dict:
             tests += 1; ok = (rev0 / ta0) > (rev1 / ta1); f_score += int(ok)
             breakdown.append(("8. كفاءة دوران الأصول", f"{rev0/ta0:.2f}x", ok))
 
+        # تقويم الأرباح والكوبونات (V11.1)
+        cal_info = {}
+        try:
+            cal = t.calendar
+            if isinstance(cal, dict):
+                cal_info = cal
+            elif cal is not None and hasattr(cal, "to_dict"):
+                cal_info = cal.to_dict()
+        except Exception:
+            cal_info = {}
+        earn_date = None
+        ex_div = info.get("exDividendDate")
+        if ex_div:
+            try:
+                earn_date = datetime.fromtimestamp(int(ex_div)).strftime("%Y-%m-%d") if not isinstance(ex_div, str) else ex_div
+            except Exception:
+                earn_date = str(ex_div)[:10]
         return {
             "name": info.get("longName") or info.get("shortName") or ticker,
             "sector": info.get("sector", "غير محدد"),
@@ -1473,7 +1490,11 @@ def fetch_fundamental_analysis(ticker: str) -> dict:
             "pe": info.get("trailingPE"), "pb": info.get("priceToBook"),
             "roe": info.get("returnOnEquity"), "div_yield": info.get("dividendYield"),
             "market_cap": info.get("marketCap"),
-            "f_score": f_score, "tests_available": tests, "breakdown": breakdown
+            "f_score": f_score, "tests_available": tests, "breakdown": breakdown,
+            "calendar": cal_info,
+            "ex_dividend": earn_date,
+            "dividend_rate": info.get("dividendRate"),
+            "payout_ratio": info.get("payoutRatio"),
         }
     except Exception as e:
         return {"error": str(e)}
@@ -1516,6 +1537,26 @@ force_sync = st.session_state.pop("force_cloud_sync", False)
 my_portfolio, cloud_connected = load_portfolio(force_cloud_refresh=force_sync)
 closed_trades = load_closed_trades(force_refresh=force_sync)
 portfolio_clean_syms = [x["symbol"].upper().replace(".CA", "").strip() for x in my_portfolio if x.get("symbol")]
+
+# ===== Watchlist (V11.1) =====
+LOCAL_WATCH_FILE = "watchlist_cache.json"
+def _load_watchlist():
+    try:
+        if os.path.exists(LOCAL_WATCH_FILE):
+            return json.load(open(LOCAL_WATCH_FILE, encoding="utf-8"))
+    except Exception:
+        pass
+    return st.session_state.get("watchlist", [])
+def _save_watchlist(wl):
+    st.session_state["watchlist"] = wl
+    try:
+        with open(LOCAL_WATCH_FILE, "w", encoding="utf-8") as f:
+            json.dump(wl, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+watchlist = _load_watchlist()
+st.session_state["watchlist"] = watchlist
+
 
 session_info = get_egx_session_metrics()
 refresh_nonce = st.session_state.get("refresh_nonce", 0)
@@ -1573,6 +1614,20 @@ with top_bar3:
 # ==========================================
 perf1m_list = [q["perf_1m"] for q in raw_egx_tv_map.values() if q.get("volume", 0) > 0]
 market_median_perf1m = float(np.median(perf1m_list)) if perf1m_list else 0.0
+
+# مزاج السوق (Market Mood) — breadth + VWAP
+_gainers = sum(1 for q in raw_egx_tv_map.values() if float(q.get("change") or 0) > 0)
+_total_st = len(raw_egx_tv_map) or 1
+market_breadth_pct = (_gainers / _total_st) * 100.0
+_vwap_above = sum(1 for q in raw_egx_tv_map.values() if float(q.get("close") or 0) > float(q.get("VWAP") or q.get("close") or 0))
+market_vwap_breadth = (_vwap_above / _total_st) * 100.0
+if market_breadth_pct >= 60 and market_vwap_breadth >= 55:
+    market_mood_txt, market_mood_cls = "🟢 إيجابي (سيطرة مشترين)", "badge-bull"
+elif market_breadth_pct <= 40:
+    market_mood_txt, market_mood_cls = "🔴 سلبي (ضغط بيعي)", "badge-bear"
+else:
+    market_mood_txt, market_mood_cls = "🟡 محايد (توازن)", "badge-warn"
+
 
 all_analyzed_map = {}
 scanner_results = []
@@ -1742,6 +1797,29 @@ if tg_auto_whales and tg_token and tg_chat_id:
                 if ok_w:
                     record_sent_tg_alert(wk, get_cairo_now().strftime("%H:%M"), sent_tg_log)
 
+# ===== فحص قائمة المراقبة (Watchlist Alerts) =====
+watchlist_alerts = []
+for w in list(st.session_state.get("watchlist", [])):
+    sym_w = str(w.get("symbol", "")).upper().replace(".CA", "").strip()
+    target = float(w.get("target", 0) or 0)
+    direction = w.get("direction", "above")
+    sinfo_w = all_analyzed_map.get(sym_w)
+    if not sinfo_w or target <= 0:
+        continue
+    cp_w = float(sinfo_w.get("الإغلاق", 0) or 0)
+    if cp_w <= 0:
+        continue
+    triggered = (direction == "above" and cp_w >= target) or (direction == "below" and cp_w <= target)
+    if triggered:
+        msg = "📌 <b>Watchlist Alert — %s</b> (%s)<br>السعر <b>%s</b> %s الهدف <b>%s</b>" % (sym_w, sinfo_w.get("اسم الشركة",""), cp_w, (">=" if direction=="above" else "<="), target)
+        watchlist_alerts.append((sym_w, msg))
+        if tg_auto_port and tg_token and tg_chat_id:
+            wk = "%s_WL_%s_%s" % (today_str, sym_w, target)
+            if wk not in sent_tg_log:
+                ok_w, _ = send_telegram_message(tg_token, tg_chat_id, msg)
+                if ok_w:
+                    record_sent_tg_alert(wk, get_cairo_now().strftime("%H:%M"), sent_tg_log)
+
 # ==============================================================================
 # التنقل الرئيسي المقسم إلى 4 علامات تبويب احترافية مستقلة
 # ==============================================================================
@@ -1756,12 +1834,17 @@ tab_radar, tab_portfolio, tab_lab, tab_settings = st.tabs([
 # التبويب 1: رادار السوق والفرص
 # ==============================================================================
 with tab_radar:
-    m1, m2, m3, m4 = st.columns(4)
+    m1, m2, m3, m4, m5 = st.columns(5)
     m1.markdown(f'<div class="kpi-card"><div class="kpi-label">📡 أسهم مفحوصة</div><div class="kpi-val">{len(raw_egx_tv_map)} سهم</div></div>', unsafe_allow_html=True)
     m2.markdown(f'<div class="kpi-card"><div class="kpi-label">🎯 صفقات نشطة</div><div class="kpi-val txt-green">{len(filtered_results)}</div></div>', unsafe_allow_html=True)
     m3.markdown(f'<div class="kpi-card"><div class="kpi-label">📈 أداء السوق (شهر)</div><div class="kpi-val {"txt-green" if market_median_perf1m>=0 else "txt-red"}">{market_median_perf1m:+.2f}%</div></div>', unsafe_allow_html=True)
     m4.markdown(f'<div class="kpi-card" style="border-top-color:#FACC15;"><div class="kpi-label">🛡️ المخاطرة المقترحة</div><div class="kpi-val txt-gold">{capital*(risk_pct/100):,.0f} ج.م</div></div>', unsafe_allow_html=True)
+    m5.markdown(f'<div class="kpi-card" style="border-top-color:#22C55E;"><div class="kpi-label">🧭 مزاج السوق</div><div class="kpi-val" style="font-size:15px;"><span class="{market_mood_cls}">{market_mood_txt}</span><div style="font-size:11px;color:#475569;margin-top:2px;">Breadth {market_breadth_pct:.0f}% • VWAP {market_vwap_breadth:.0f}%</div></div></div>', unsafe_allow_html=True)
     st.write("")
+
+    if watchlist_alerts:
+        for _sym, _msg in watchlist_alerts:
+            st.markdown('<div class="alert-box-success">%s</div>' % _msg, unsafe_allow_html=True)
 
     if filtered_results:
         st.markdown("### 🏆 أقوى 3 فرص سيولة وزخم الآن (Top 3 Radar)")
@@ -1837,6 +1920,20 @@ with tab_portfolio:
     pk3.markdown(f'<div class="kpi-card"><div class="kpi-label">📈 صافي الربح/الخسارة</div><div class="kpi-val {"txt-green" if total_net_pnl>=0 else "txt-red"}">{total_net_pnl:+,.0f} ({total_pnl_pct:+.1f}%)</div></div>', unsafe_allow_html=True)
     pk4.markdown(f'<div class="kpi-card" style="border-top-color:#FACC15;"><div class="kpi-label">🛡️ المخاطرة المفتوحة</div><div class="kpi-val txt-gold">{total_open_risk:,.0f} ({open_risk_pct:.1f}%)</div></div>', unsafe_allow_html=True)
     st.write("")
+    # ===== خريطة حرارة المحفظة (Treemap) V11.1 =====
+    if portfolio_rows:
+        try:
+            import plotly.express as _px
+            _tdf = pd.DataFrame(portfolio_rows)
+            _fig_tm = _px.treemap(
+                _tdf, path=["الرمز"], values="الكمية",
+                color="العائد %", color_continuous_scale="RdYlGn", color_continuous_midpoint=0,
+                title="خريطة حرارة المحفظة (حجم = كمية، لون = العائد %)",
+            )
+            _fig_tm.update_layout(height=360, template="plotly_white", paper_bgcolor="#FFFFFF", margin=dict(l=10,r=10,t=40,b=10))
+            st.plotly_chart(_fig_tm, use_container_width=True)
+        except Exception as _e:
+            st.caption("تعذر رسم الخريطة: %s" % _e)
 
     ptab_open, ptab_add, ptab_history = st.tabs([
         f"📋 مراكزي المفتوحة والتحكم الآلي ({len(portfolio_rows)})",
@@ -2068,24 +2165,100 @@ with tab_portfolio:
             tk3.markdown(f'<div class="kpi-card"><div class="kpi-label">⚖️ معامل الربح</div><div class="kpi-val txt-gold">{pf:.2f}x</div></div>', unsafe_allow_html=True)
             tk4.markdown(f'<div class="kpi-card"><div class="kpi-label">💰 صافي الأرباح المحققة</div><div class="kpi-val {"txt-green" if tot_realized>=0 else "txt-red"}">{tot_realized:+,.0f} ج.م</div></div>', unsafe_allow_html=True)
             st.write("")
+            # ===== Risk Analytics (V11.1) =====
+            try:
+                _sorted = sorted(closed_trades, key=lambda t: str(t.get("closed_at", "")))
+                _cum = 0.0
+                _peak = 0.0
+                _maxdd = 0.0
+                _cum_series = []
+                _rets = []
+                for t in _sorted:
+                    pnl = float(t.get("net_pnl", 0) or 0)
+                    bp = float(t.get("buy_price", 0) or 0)
+                    sh = float(t.get("shares", 0) or 0)
+                    cost = bp * sh
+                    _cum += pnl
+                    _cum_series.append(_cum)
+                    if _cum > _peak:
+                        _peak = _cum
+                    dd = _peak - _cum
+                    if dd > _maxdd:
+                        _maxdd = dd
+                    if cost > 0:
+                        _rets.append(pnl / cost)
+                import statistics as _st
+                _mean = (_st.fmean(_rets) if _rets else 0.0)
+                _std = (_st.pstdev(_rets) if len(_rets) > 1 else 0.0)
+                _down = [r for r in _rets if r < 0]
+                _down_std = (_st.pstdev(_down) if len(_down) > 1 else 0.0)
+                _sharpe = (_mean / _std * (len(_rets) ** 0.5)) if _std > 0 else 0.0
+                _sortino = (_mean / _down_std * (len(_rets) ** 0.5)) if _down_std > 0 else 0.0
+                _calmar = (sum(_rets) / _maxdd) if _maxdd > 0 else 0.0
+                _avg_win = _st.fmean([float(t.get("net_pnl",0)) for t in closed_trades if float(t.get("net_pnl",0))>0]) if wins else 0.0
+                _avg_loss = _st.fmean([float(t.get("net_pnl",0)) for t in closed_trades if float(t.get("net_pnl",0))<=0]) if losses else 0.0
+                _expectancy = ( (len(wins)/len(closed_trades))*_avg_win + (len(losses)/len(closed_trades))*_avg_loss ) if closed_trades else 0.0
+            except Exception:
+                _sharpe = _sortino = _calmar = _maxdd = _expectancy = _avg_win = _avg_loss = 0.0
+                _cum_series = []
+
+            rk1, rk2, rk3, rk4 = st.columns(4)
+            rk1.markdown(f'<div class="kpi-card"><div class="kpi-label">📐 Sharpe (per-trade)</div><div class="kpi-val txt-cyan">{_sharpe:+.2f}</div></div>', unsafe_allow_html=True)
+            rk2.markdown(f'<div class="kpi-card"><div class="kpi-label">📉 Sortino</div><div class="kpi-val txt-cyan">{_sortino:+.2f}</div></div>', unsafe_allow_html=True)
+            rk3.markdown(f'<div class="kpi-card"><div class="kpi-label">⬇️ Max Drawdown</div><div class="kpi-val txt-red">{_maxdd:,.0f} ج.م</div></div>', unsafe_allow_html=True)
+            rk4.markdown(f'<div class="kpi-card" style="border-top-color:#FACC15;"><div class="kpi-label">🎯 Expectancy/صفقة</div><div class="kpi-val txt-gold">{_expectancy:+,.0f} ج.م</div></div>', unsafe_allow_html=True)
+            rk5, rk6, rk7, rk8 = st.columns(4)
+            rk5.markdown(f'<div class="kpi-card"><div class="kpi-label">🏆 متوسط ربح</div><div class="kpi-val txt-green">{_avg_win:+,.0f} ج.م</div></div>', unsafe_allow_html=True)
+            rk6.markdown(f'<div class="kpi-card"><div class="kpi-label">💔 متوسط خسارة</div><div class="kpi-val txt-red">{_avg_loss:+,.0f} ج.م</div></div>', unsafe_allow_html=True)
+            rk7.markdown(f'<div class="kpi-card"><div class="kpi-label">📊 Calmar</div><div class="kpi-val txt-cyan">{_calmar:+.2f}</div></div>', unsafe_allow_html=True)
+            rk8.markdown(f'<div class="kpi-card"><div class="kpi-label">🔢 عدد الصفقات</div><div class="kpi-val">{len(closed_trades)}</div></div>', unsafe_allow_html=True)
+            if _cum_series:
+                import plotly.graph_objects as _go
+                _fig_cum = _go.Figure(_go.Scatter(y=_cum_series, mode="lines+markers", line=dict(color="#0284C7", width=2.5), fill="tozeroy", fillcolor="rgba(2,132,199,0.12)"))
+                _fig_cum.update_layout(title="📈 منحنى الأرباح التراكمية (Equity Curve)", height=320, template="plotly_white", paper_bgcolor="#FFFFFF", plot_bgcolor="#F8FAFC", margin=dict(l=10,r=10,t=40,b=10))
+                st.plotly_chart(_fig_cum, use_container_width=True)
+            st.write("")
+
             st.dataframe(pd.DataFrame([
                 {"الرمز": t.get("symbol"), "اسم الشركة": get_friendly_stock_name(t.get("symbol", "")), "الكمية": t.get("shares"), "سعر الشراء": t.get("buy_price"), "سعر البيع": t.get("sell_price"), "صافي الربح/الخسارة": t.get("net_pnl"), "العائد %": t.get("pnl_pct"), "التاريخ": str(t.get("closed_at", ""))[:16].replace("T", " ")}
                 for t in closed_trades
             ]), use_container_width=True, hide_index=True)
 
         st.divider()
-        st.markdown("#### 💾 النسخ الاحتياطي والاستعادة السريعة للمحفظة (JSON)")
-        b1, b2 = st.columns(2)
+        st.markdown("#### 💾 النسخ الاحتياطي والاستعادة + تصدير Excel")
+        b1, b2, b3 = st.columns(3)
         with b1:
             st.download_button(
-                "⬇️ تحميل نسخة احتياطية من محفظتي (JSON)",
+                "⬇️ نسخة احتياطية (JSON)",
                 data=json.dumps(my_portfolio, ensure_ascii=False, indent=2),
                 file_name=f"egx_portfolio_{today_str}.json",
                 mime="application/json",
                 use_container_width=True
             )
         with b2:
-            up_file = st.file_uploader("⬆️ استعادة المحفظة من ملف JSON", type=["json"], label_visibility="collapsed")
+            # Excel export: portfolio + closed trades + radar
+            try:
+                import io as _io
+                _buf = _io.BytesIO()
+                with pd.ExcelWriter(_buf, engine="openpyxl") as _w:
+                    if my_portfolio:
+                        pd.DataFrame(my_portfolio).to_excel(_w, sheet_name="المحفظة", index=False)
+                    if closed_trades:
+                        pd.DataFrame(closed_trades).to_excel(_w, sheet_name="صفقات مغلقة", index=False)
+                    if filtered_results:
+                        pd.DataFrame(filtered_results).to_excel(_w, sheet_name="رادار", index=False)
+                _buf.seek(0)
+                st.download_button(
+                    "📊 تصدير Excel (محفظة+صفقات+رادار)",
+                    data=_buf.getvalue(),
+                    file_name=f"egx_report_{today_str}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+            except Exception as _e:
+                st.caption(f"⚠️ Excel غير متاح: {_e}")
+        with b3:
+            up_file = st.file_uploader("⬆️ استعادة من JSON", type=["json"], label_visibility="collapsed")
             if up_file is not None:
                 try:
                     restored = json.load(up_file)
@@ -2118,12 +2291,33 @@ with tab_lab:
         selected_data = all_analyzed_map[selected_symbol]
         chg_s = selected_data["التغير %"]
 
+        mtf_txt = "⚪ غير متوفر"
+        try:
+            _df_mtf = fetch_single_stock_history(selected_data["Ticker"])
+            if not _df_mtf.empty and len(_df_mtf) >= 40:
+                _w = _df_mtf.resample("W").agg({"Open":"first","High":"max","Low":"min","Close":"last","Volume":"sum"}).dropna()
+                if len(_w) >= 8:
+                    _w["EMA20w"] = _w["Close"].ewm(span=20, adjust=False).mean()
+                    _last = float(_w["Close"].iloc[-1])
+                    _ema = float(_w["EMA20w"].iloc[-1])
+                    _prev = float(_w["Close"].iloc[-2])
+                    if _last > _ema and _last > _prev:
+                        mtf_txt = "🟢 صاعد (أسبوعي)"
+                    elif _last < _ema and _last < _prev:
+                        mtf_txt = "🔴 هابط (أسبوعي)"
+                    else:
+                        mtf_txt = "🟡 محايد (أسبوعي)"
+        except Exception:
+            pass
+
+
         st.markdown(f"""
         <div class="stock-header-strip">
             <div>
                 <span class="txt-cyan" style="font-size:22px;font-weight:900;">{selected_symbol}</span>
                 <span class="txt-gold" style="font-size:17px;font-weight:800;margin-right:10px;">{selected_data['اسم الشركة']}</span>
                 <div style="font-size:13px;color:#94A3B8;margin-top:3px;">{selected_data['التشخيص الفني']}</div>
+                <div style="font-size:12px;margin-top:4px;"><b>MTF:</b> {mtf_txt}</div>
             </div>
             <div style="display:flex;gap:18px;align-items:center;flex-wrap:wrap;">
                 <div><span class="txt-muted" style="font-size:12px;">السعر اللحظي</span><div class="txt-white" style="font-size:18px;font-weight:900;">{selected_data['الإغلاق']} ج.م <span class="{'txt-green' if chg_s>=0 else 'txt-red'}" style="font-size:13px;">({chg_s:+.2f}%)</span></div></div>
@@ -2464,6 +2658,25 @@ with tab_lab:
                         dff = pd.DataFrame(fund["breakdown"], columns=["المعيار", "القيمة", "النتيجة"])
                         dff["النتيجة"] = dff["النتيجة"].map({True: "✅ ناجح (+1)", False: "❌ لم يتحقق"})
                         st.dataframe(dff, use_container_width=True, hide_index=True)
+                    # تقويم الأرباح والكوبونات (V11.1)
+                    st.markdown("##### 📅 تقويم الأرباح والكوبونات")
+                    cal_rows = []
+                    if fund.get("ex_dividend"):
+                        cal_rows.append({"الحدث": "تاريخ الاستحقاق (Ex-Dividend)", "التاريخ/القيمة": fund["ex_dividend"]})
+                    if fund.get("dividend_rate"):
+                        cal_rows.append({"الحدث": "معدل التوزيع (Dividend Rate)", "التاريخ/القيمة": fund["dividend_rate"]})
+                    if fund.get("div_yield"):
+                        cal_rows.append({"الحدث": "عائد التوزيع (Yield)", "التاريخ/القيمة": f"{fund['div_yield']*100:.2f}%"})
+                    if fund.get("payout_ratio"):
+                        cal_rows.append({"الحدث": "نسبة التوزيع (Payout)", "التاريخ/القيمة": f"{fund['payout_ratio']*100:.1f}%"})
+                    cal = fund.get("calendar") or {}
+                    if isinstance(cal, dict):
+                        for k, v in cal.items():
+                            cal_rows.append({"الحدث": str(k), "التanggal/القيمة" if False else "التاريخ/القيمة": str(v)[:60]})
+                    if cal_rows:
+                        st.dataframe(pd.DataFrame(cal_rows), use_container_width=True, hide_index=True)
+                    else:
+                        st.caption("ℹ️ لا توجد بيانات تقويم متاحة لهذا السهم.")
 
         # 9) التحليل الزمني
         with t_gann:
@@ -2612,6 +2825,36 @@ alter table tg_alerts_log disable row level security;
         st.session_state["cfg_fee_tier"] = "0.16%" if "0.16%" in fee_choice else "0.37%"
         st.session_state["cfg_min_score"] = st.slider("🎯 الحد الأدنى للسكور في جدول الرادار:", 0, 100, min_score, 5)
         st.session_state["cfg_alert_buf"] = st.slider("🔔 حساسية تنبيه قرب الوقف/الهدف (%):", 0.5, 8.0, alert_buffer_pct, 0.5)
+
+# ===== واجهة إدارة قائمة المراقبة (Watchlist UI) =====
+with st.expander("📌 قائمة المراقبة (Watchlist) — تنبيهات سعر", expanded=False):
+    wlc1, wlc2, wlc3, wlc4 = st.columns([1.2, 1, 1, 1])
+    with wlc1:
+        wl_sym = st.text_input("رمز السهم", key="wl_sym_in", placeholder="ABUK").upper().replace(".CA","").strip()
+    with wlc2:
+        wl_dir = st.selectbox("الاتجاه", ["above (>=", "below (<="], key="wl_dir_in")
+    with wlc3:
+        wl_tgt = st.number_input("السعر الهدف", min_value=0.0, value=0.0, step=0.05, key="wl_tgt_in")
+    with wlc4:
+        st.write(""); st.write("")
+        if st.button("add", key="wl_add_btn", use_container_width=True):
+            if wl_sym and wl_tgt > 0:
+                wl = list(st.session_state.get("watchlist", []))
+                wl.append({"symbol": wl_sym, "direction": "above" if "above" in wl_dir else "below", "target": float(wl_tgt)})
+                _save_watchlist(wl)
+                st.success("تمت الإضافة.")
+                st.rerun()
+    wl_df = pd.DataFrame(st.session_state.get("watchlist", []))
+    if not wl_df.empty:
+        st.dataframe(wl_df, use_container_width=True, hide_index=True)
+        del_sym = st.selectbox("حذف:", options=list(range(len(wl_df))), format_func=lambda i: "%s - %s %s" % (wl_df.iloc[i]["symbol"], wl_df.iloc[i]["direction"], wl_df.iloc[i]["target"]), key="wl_del_sel")
+        if st.button("delete", key="wl_del_btn"):
+            wl = list(st.session_state.get("watchlist", []))
+            if 0 <= del_sym < len(wl):
+                wl.pop(del_sym)
+                _save_watchlist(wl)
+                st.rerun()
+
 
 if live_auto:
     time.sleep(300)
