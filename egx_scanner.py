@@ -17,10 +17,10 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 # ==========================================
-# إعدادات الصفحة والتصميم البصري الداكن (V11.2)
+# إعدادات الصفحة والتصميم البصري الداكن (V11.3)
 # ==========================================
 st.set_page_config(
-    page_title="EGX Whale Hunter Pro V11.2",
+    page_title="EGX Whale Hunter Pro V11.3",
     page_icon="🦅",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -178,7 +178,7 @@ else:
             font-family: 'Cairo', sans-serif !important;
         }
 
-        /* ===== V11.2 Light Theme ===== */
+        /* ===== V11.3 Light Theme ===== */
         .stApp, [data-testid="stAppViewContainer"], [data-testid="stHeader"], [data-testid="stToolbar"] {
             background-color: #F1F5F9 !important;
             color: #0F172A !important;
@@ -630,6 +630,81 @@ def get_secret_safe(key_name: str, default_val: str = "") -> str:
         pass
     return os.environ.get(key_name, default_val).strip()
 
+def sb_signup(email: str, password: str):
+    sb_url = get_secret_safe("SUPABASE_URL") or st.session_state.get("sb_url_val", "")
+    if not sb_url:
+        return False, "Missing SUPABASE_URL"
+    url = sb_url.rstrip("/") + "/auth/v1/signup"
+    payload = json.dumps({"email": email, "password": password}).encode("utf-8")
+    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json", "apikey": get_secret_safe("SUPABASE_KEY") or st.session_state.get("sb_key_val", "")}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        if data.get("access_token"):
+            st.session_state["auth_token"] = data["access_token"]
+            st.session_state["auth_user_id"] = (data.get("user") or {}).get("id")
+            st.session_state["auth_email"] = email
+            return True, "✅ تم إنشاء الحساب وتسجيل الدخول!"
+        if data.get("user"):
+            return True, "✅ تم إنشاء الحساب. يرجى تأكيد البريد الإلكتروني ثم تسجيل الدخول."
+        return False, str(data)
+    except urllib.error.HTTPError as e:
+        try:
+            err = json.loads(e.read().decode("utf-8"))
+            return False, err.get("msg") or err.get("error_description") or str(err)
+        except Exception:
+            return False, str(e)
+    except Exception as e:
+        return False, str(e)
+
+
+def sb_login(email: str, password: str):
+    sb_url = get_secret_safe("SUPABASE_URL") or st.session_state.get("sb_url_val", "")
+    sb_key = get_secret_safe("SUPABASE_KEY") or st.session_state.get("sb_key_val", "")
+    if not sb_url or not sb_key:
+        return False, "Missing SUPABASE_URL/KEY"
+    url = sb_url.rstrip("/") + "/auth/v1/token?grant_type=password"
+    payload = json.dumps({"email": email, "password": password}).encode("utf-8")
+    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json", "apikey": sb_key}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        if data.get("access_token"):
+            st.session_state["auth_token"] = data["access_token"]
+            st.session_state["auth_user_id"] = (data.get("user") or {}).get("id")
+            st.session_state["auth_email"] = email
+            return True, "✅ تم تسجيل الدخول!"
+        return False, data.get("error_description") or str(data)
+    except urllib.error.HTTPError as e:
+        try:
+            err = json.loads(e.read().decode("utf-8"))
+            return False, err.get("msg") or err.get("error_description") or str(err)
+        except Exception:
+            return False, str(e)
+    except Exception as e:
+        return False, str(e)
+
+
+def sb_logout():
+    for k in ["auth_token", "auth_user_id", "auth_email"]:
+        st.session_state.pop(k, None)
+
+
+def is_authenticated() -> bool:
+    return bool(st.session_state.get("auth_token") and st.session_state.get("auth_user_id"))
+
+
+def get_auth_headers():
+    sb_key = get_secret_safe("SUPABASE_KEY") or st.session_state.get("sb_key_val", "")
+    token = st.session_state.get("auth_token") or sb_key
+    return {
+        "apikey": sb_key,
+        "Authorization": "Bearer " + token,
+        "Content-Type": "application/json",
+        "Prefer": "return=representation",
+    }
+
+
 def has_permanent_secrets() -> bool:
     return bool(get_secret_safe("SUPABASE_URL") and get_secret_safe("SUPABASE_KEY"))
 
@@ -647,11 +722,21 @@ def _get_sb_headers():
     return sb_url.rstrip("/"), headers
 
 def _sb_request(method: str, path: str, payload=None, extra_headers=None):
-    base_url, headers = _get_sb_headers()
+    base_url = st.session_state.get("sb_url_val") or get_secret_safe("SUPABASE_URL")
+    base_url = base_url.rstrip("/") if base_url else ""
     if not base_url:
-        return False, "Missing SUPABASE_URL or SUPABASE_KEY"
+        return False, "Missing SUPABASE_URL"
+    sb_key = st.session_state.get("sb_key_val") or get_secret_safe("SUPABASE_KEY")
+    headers = get_auth_headers() if is_authenticated() else {
+        "apikey": sb_key,
+        "Authorization": "Bearer " + sb_key,
+        "Content-Type": "application/json",
+        "Prefer": "return=representation",
+    }
     if extra_headers:
         headers.update(extra_headers)
+    if not sb_key:
+        return False, "Missing SUPABASE_KEY"
     url = f"{base_url}/rest/v1/{path}"
     data_bytes = json.dumps(payload).encode("utf-8") if payload is not None else None
     req = urllib.request.Request(url, data=data_bytes, headers=headers, method=method)
@@ -697,7 +782,10 @@ def _save_local_portfolio_cache(items: list):
 def load_portfolio(force_cloud_refresh: bool = False):
     if not force_cloud_refresh and "cached_portfolio" in st.session_state:
         return st.session_state["cached_portfolio"], st.session_state.get("sb_connected", False)
-    ok, data = _sb_request("GET", "portfolio?select=*&order=symbol.asc")
+    q = "portfolio?select=*&order=symbol.asc"
+    if is_authenticated():
+        q += "&user_id=eq." + str(st.session_state.get("auth_user_id"))
+    ok, data = _sb_request("GET", q)
     if ok and isinstance(data, list):
         st.session_state["cached_portfolio"] = data
         st.session_state["sb_connected"] = True
@@ -711,6 +799,8 @@ def load_portfolio(force_cloud_refresh: bool = False):
 def upsert_portfolio_item(item: dict):
     sym = item["symbol"].upper().replace(".CA", "").strip()
     item["symbol"] = sym
+    if is_authenticated() and "user_id" not in item:
+        item["user_id"] = st.session_state.get("auth_user_id")
     ok, err_msg = _sb_request(
         "POST",
         "portfolio?on_conflict=symbol",
@@ -753,7 +843,10 @@ def sync_full_portfolio_to_cloud(items: list):
 def load_closed_trades(force_refresh: bool = False):
     if not force_refresh and "cached_closed" in st.session_state:
         return st.session_state["cached_closed"]
-    ok, data = _sb_request("GET", "closed_trades?select=*&order=closed_at.desc")
+    q = "closed_trades?select=*&order=closed_at.desc"
+    if is_authenticated():
+        q += "&user_id=eq." + str(st.session_state.get("auth_user_id"))
+    ok, data = _sb_request("GET", q)
     if ok and isinstance(data, list):
         st.session_state["cached_closed"] = data
         _save_local_json(LOCAL_CLOSED_FILE, data)
@@ -771,6 +864,7 @@ def record_closed_trade(symbol: str, shares: int, buy_price: float, sell_price: 
     pnl_pct = (net_pnl / max(0.01, cost)) * 100.0
     row = {
         "symbol": sym,
+        "user_id": st.session_state.get("auth_user_id") if is_authenticated() else None,
         "shares": int(shares),
         "buy_price": round(buy_price, 2),
         "sell_price": round(sell_price, 2),
@@ -1018,7 +1112,7 @@ def analyze_intraday_flow(q: dict, fallback_close: float = 0.0, session_progress
 
 def evaluate_smart_stop_loss(sym: str, curr_p: float, sl: float, buy_p: float, flow_res: dict, alert_buffer_pct: float = 2.5) -> dict:
     """
-    محرك الوقف الذكي الهجين (V11.2):
+    محرك الوقف الذكي الهجين (V11.3):
     - كسر عميق >= 1.5% أسفل الوقف -> خروج فوري.
     - سيولة بيعية مؤسسية: RVOL >= 1.6x و (VWAP diff <= -0.8% أو flow_score <= -35).
     - انهيار زخم: RSI15 <= 35 + CLV <= 15% + RVOL >= 1.2x.
@@ -1690,7 +1784,7 @@ def fetch_fundamental_analysis(ticker: str) -> dict:
             tests += 1; ok = (rev0 / ta0) > (rev1 / ta1); f_score += int(ok)
             breakdown.append(("8. كفاءة دوران الأصول", f"{rev0/ta0:.2f}x", ok))
 
-        # تقويم الأرباح والكوبونات (V11.2)
+        # تقويم الأرباح والكوبونات (V11.3)
         cal_info = {}
         try:
             cal = t.calendar
@@ -1757,12 +1851,41 @@ def fetch_stock_news(symbol_clean: str) -> list:
 # ==========================================
 # تحميل البيانات الحية والمحفظة السحابية
 # ==========================================
+if not is_authenticated():
+    st.markdown('### Auth (Supabase)')
+    with st.form('auth_form'):
+        ae = st.text_input('Email:', key='auth_email_in')
+        ap = st.text_input('Password:', type='password', key='auth_pass_in')
+        c1, c2 = st.columns(2)
+        with c1:
+            do_login = st.form_submit_button('Login', use_container_width=True)
+        with c2:
+            do_signup = st.form_submit_button('Sign up', use_container_width=True)
+    if do_login:
+        ok, msg = sb_login(ae, ap)
+        if ok:
+            st.success('Logged in')
+            st.rerun()
+        else:
+            st.error(msg)
+    if do_signup:
+        ok, msg = sb_signup(ae, ap)
+        if ok:
+            if msg == 'CONFIRM_EMAIL':
+                st.success('Account created. Please confirm email.')
+            else:
+                st.success('Account created & logged in')
+                st.rerun()
+        else:
+            st.error(msg)
+    st.stop()
+
 force_sync = st.session_state.pop("force_cloud_sync", False)
 my_portfolio, cloud_connected = load_portfolio(force_cloud_refresh=force_sync)
 closed_trades = load_closed_trades(force_refresh=force_sync)
 portfolio_clean_syms = [x["symbol"].upper().replace(".CA", "").strip() for x in my_portfolio if x.get("symbol")]
 
-# ===== Watchlist (V11.2) =====
+# ===== Watchlist (V11.3) =====
 LOCAL_WATCH_FILE = "watchlist_cache.json"
 def _load_watchlist():
     try:
@@ -1811,7 +1934,7 @@ sb_badge = "☁️ سحابة Supabase متصلة" if cloud_connected else "💾
 st.markdown(f"""
 <div class="hero-banner">
     <div>
-        <div class="hero-title">🦅 <span class="hero-accent">EGX WHALE HUNTER</span> PRO <span style="font-size:13px;color:#FACC15;">V11.2</span></div>
+        <div class="hero-title">🦅 <span class="hero-accent">EGX WHALE HUNTER</span> PRO <span style="font-size:13px;color:#FACC15;">V11.3</span></div>
         <div class="hero-sub">🌐 تغطية ({len(raw_egx_tv_map)} سهم) • {sb_badge} • 💼 محفظتي ({len(portfolio_clean_syms)}) • {tg_badge} • آخر تحديث: {last_live_sync}</div>
     </div>
     <div class="session-pill">{session_info['badge']}</div>
@@ -2150,7 +2273,7 @@ with tab_portfolio:
     pk3.markdown(f'<div class="kpi-card"><div class="kpi-label">📈 صافي الربح/الخسارة</div><div class="kpi-val {"txt-green" if total_net_pnl>=0 else "txt-red"}">{total_net_pnl:+,.0f} ({total_pnl_pct:+.1f}%)</div></div>', unsafe_allow_html=True)
     pk4.markdown(f'<div class="kpi-card" style="border-top-color:#FACC15;"><div class="kpi-label">🛡️ المخاطرة المفتوحة</div><div class="kpi-val txt-gold">{total_open_risk:,.0f} ({open_risk_pct:.1f}%)</div></div>', unsafe_allow_html=True)
     st.write("")
-    # ===== خريطة حرارة المحفظة (Treemap) V11.2 =====
+    # ===== خريطة حرارة المحفظة (Treemap) V11.3 =====
     if portfolio_rows:
         try:
             import plotly.express as _px
@@ -2395,7 +2518,7 @@ with tab_portfolio:
             tk3.markdown(f'<div class="kpi-card"><div class="kpi-label">⚖️ معامل الربح</div><div class="kpi-val txt-gold">{pf:.2f}x</div></div>', unsafe_allow_html=True)
             tk4.markdown(f'<div class="kpi-card"><div class="kpi-label">💰 صافي الأرباح المحققة</div><div class="kpi-val {"txt-green" if tot_realized>=0 else "txt-red"}">{tot_realized:+,.0f} ج.م</div></div>', unsafe_allow_html=True)
             st.write("")
-            # ===== Risk Analytics (V11.2) =====
+            # ===== Risk Analytics (V11.3) =====
             try:
                 _sorted = sorted(closed_trades, key=lambda t: str(t.get("closed_at", "")))
                 _cum = 0.0
@@ -2521,7 +2644,7 @@ with tab_lab:
         selected_data = all_analyzed_map[selected_symbol]
         chg_s = selected_data["التغير %"]
 
-        mtf_txt = "⚪ غير متوفر"
+        mtf_txt = "⚪ لا بيانات تاريخية (Yahoo)"
         try:
             _df_mtf = fetch_single_stock_history(selected_data["Ticker"])
             if not _df_mtf.empty and len(_df_mtf) >= 40:
@@ -2547,6 +2670,7 @@ with tab_lab:
                 <span class="txt-cyan" style="font-size:22px;font-weight:900;">{selected_symbol}</span>
                 <span class="txt-gold" style="font-size:17px;font-weight:800;margin-right:10px;">{selected_data['اسم الشركة']}</span>
                 <div style="font-size:13px;color:#94A3B8;margin-top:3px;">{selected_data['التشخيص الفني']}</div>
+                <div style="font-size:11px;color:#64748B;margin-top:2px;">📡 التدفق اللحظي: TradingView (100% EGX) | 📊 التاريخي: Yahoo Finance (محدود)</div>
                 <div style="font-size:12px;margin-top:4px;"><b>MTF:</b> {mtf_txt}</div>
             </div>
             <div style="display:flex;gap:18px;align-items:center;flex-wrap:wrap;">
@@ -2889,7 +3013,7 @@ with tab_lab:
                         dff = pd.DataFrame(fund["breakdown"], columns=["المعيار", "القيمة", "النتيجة"])
                         dff["النتيجة"] = dff["النتيجة"].map({True: "✅ ناجح (+1)", False: "❌ لم يتحقق"})
                         st.dataframe(dff, use_container_width=True, hide_index=True)
-                    # تقويم الأرباح والكوبونات (V11.2)
+                    # تقويم الأرباح والكوبونات (V11.3)
                     st.markdown("##### 📅 تقويم الأرباح والكوبونات")
                     cal_rows = []
                     if fund.get("ex_dividend"):
@@ -2955,7 +3079,7 @@ with tab_lab:
                     </div>
                     """, unsafe_allow_html=True)
 
-        # 11) Backtest (V11.2)
+        # 11) Backtest (V11.3)
         with t_bt:
             st.markdown("#### 🧪 Backtest بسيط — استراتيجية close>EMA20>EMA50 + RVOL")
             btc1, btc2, btc3 = st.columns(3)
@@ -2997,6 +3121,21 @@ with tab_settings:
 
     with set_c1:
         st.markdown("### ☁️ الربط السحابي الدائم (Supabase)")
+        if is_authenticated():
+            st.success("User: %s" % st.session_state.get("auth_email"))
+            if st.button("Logout", use_container_width=True):
+                sb_logout()
+                st.rerun()
+        st.markdown("---")
+        st.caption("استعادة بيانات ما قبل V11.3 (user_id is null):")
+        if st.button("Claim Legacy Data", use_container_width=True):
+            uid = st.session_state.get("auth_user_id")
+            if uid:
+                _sb_request("PATCH", "portfolio?user_id=is.null", payload={"user_id": uid})
+                _sb_request("PATCH", "closed_trades?user_id=is.null", payload={"user_id": uid})
+                st.success("تم.")
+                st.session_state["force_cloud_sync"] = True
+                st.rerun()
         sb_url_in = st.text_input("🌐 Supabase URL:", value=st.session_state.get("sb_url_val", get_secret_safe("SUPABASE_URL")), placeholder="https://xxxx.supabase.co")
         st.session_state["sb_url_val"] = sb_url_in
         sb_key_in = st.text_input("🔐 Supabase Key:", value=st.session_state.get("sb_key_val", get_secret_safe("SUPABASE_KEY")), type="password", placeholder="eyJhbGci...")
@@ -3072,7 +3211,7 @@ alter table tg_alerts_log disable row level security;
         st.session_state["cfg_tg_port"] = st.checkbox("🔔 إرسال تنبيهات المحفظة تلقائياً", value=tg_auto_port)
         st.session_state["cfg_tg_whales"] = st.checkbox("🐋 تنبيه صفقات الحيتان (سكور 80+)", value=tg_auto_whales)
         if st.button("🧪 إرسال رسالة تجريبية لتليجرام", use_container_width=True):
-            ok_t, msg_t = send_telegram_message(tg_t_in, tg_c_in, "🦅 <b>EGX Whale Hunter Pro V11.2</b>\n✅ النظام السحابي، الألوان الداكنة، وتحليل التدفق الأوتوماتيكي تعمل بنجاح!")
+            ok_t, msg_t = send_telegram_message(tg_t_in, tg_c_in, "🦅 <b>EGX Whale Hunter Pro V11.3</b>\n✅ النظام السحابي، الألوان الداكنة، وتحليل التدفق الأوتوماتيكي تعمل بنجاح!")
             st.success("✅ وصلت الرسالة لتليجرام!") if ok_t else st.error(f"❌ {msg_t}")
 
     with set_c2:

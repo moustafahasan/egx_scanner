@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 # ==========================================
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip().rstrip("/")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "").strip()
+SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "").strip() or SUPABASE_KEY
 TG_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 TG_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 FEE_RATE = float(os.environ.get("THNDR_FEE_RATE", "0.0016"))
@@ -70,11 +71,11 @@ def is_egx_market_open() -> tuple[bool, float]:
 # دوال Supabase API
 # ==========================================
 def sb_request(method: str, path: str, payload=None, extra_headers=None):
-    if not SUPABASE_URL or not SUPABASE_KEY:
+    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
         return False, None
     headers = {
-        "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "apikey": SUPABASE_SERVICE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
         "Content-Type": "application/json",
         "Prefer": "return=representation",
     }
@@ -121,18 +122,16 @@ def save_tg_offset(new_offset: int):
 # ==========================================
 # دوال تليجرام (إرسال + استقبال الأوامر)
 # ==========================================
-def send_tg(text_html: str, chat_id: str = None) -> bool:
+def send_tg(text_html: str, chat_id: str = None, reply_markup=None) -> bool:
     target_chat = chat_id or TG_CHAT_ID
     if not TG_TOKEN or not target_chat:
         return False
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
-    payload = json.dumps({
-        "chat_id": target_chat,
-        "text": text_html,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True,
-    }).encode("utf-8")
-    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+    payload = {"chat_id": target_chat, "text": text_html, "parse_mode": "HTML", "disable_web_page_preview": True}
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    data_bytes = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=data_bytes, headers={"Content-Type": "application/json"}, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             res = json.loads(resp.read().decode("utf-8"))
@@ -140,6 +139,29 @@ def send_tg(text_html: str, chat_id: str = None) -> bool:
     except Exception as e:
         print(f"[Telegram Send Error]: {e}")
         return False
+
+def answer_callback_query(callback_id, text=""):
+    if not TG_TOKEN:
+        return
+    url = "https://api.telegram.org/bot%s/answerCallbackQuery" % TG_TOKEN
+    payload = json.dumps({"callback_query_id": callback_id, "text": text}).encode("utf-8")
+    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        urllib.request.urlopen(req, timeout=5)
+    except Exception:
+        pass
+
+
+def main_keyboard():
+    return {
+        "inline_keyboard": [
+            [{"text": "💼 محفظتي", "callback_data": "portfolio"}, {"text": "🎯 رادار", "callback_data": "radar"}],
+            [{"text": "🔍 سعر سهم", "callback_data": "price"}, {"text": "➕ شراء", "callback_data": "buy"}],
+            [{"text": "💰 بيع", "callback_data": "sell"}, {"text": "🛡️ تأمين", "callback_data": "be"}],
+            [{"text": "❓ مساعدة", "callback_data": "help"}],
+        ]
+    }
+
 
 def fetch_tg_updates(offset: int) -> list:
     if not TG_TOKEN:
@@ -441,7 +463,7 @@ def handle_command(text: str, chat_id: str, market_map: dict):
         )
         return
 
-    send_tg("🤔 لم أفهم الأمر. أرسل كلمة <b>مساعدة</b> لعرض قائمة الأوامر المتاحة.", chat_id)
+    send_tg("🤔 لم أفهم الأمر. أرسل كلمة <b>مساعدة</b> لعرض قائمة الأوامر المتاحة.", chat_id, reply_markup=main_keyboard())
 
 # ==========================================
 # حلقة المراقبة الآلية والوقف المتحرك
@@ -509,16 +531,31 @@ def run_auto_monitor(market_map: dict):
     ok_log, logs = sb_request("GET", f"tg_alerts_log?alert_key=like.{today_str}*")
     sent_keys = {x["alert_key"] for x in logs} if (ok_log and isinstance(logs, list)) else set()
 
-    def send_once(key: str, msg: str):
+    def send_once(key: str, msg: str, chat_id: str = None):
+        target = chat_id or globals().get("_CURRENT_CHAT") or TG_CHAT_ID
         if key not in sent_keys:
-            if send_tg(msg):
+            if send_tg(msg, chat_id=target):
                 sent_keys.add(key)
                 sb_request("POST", "tg_alerts_log", payload=[{"alert_key": key, "sent_at": time_str}])
+
+    # Try to load per-user telegram chat ids (optional table user_settings)
+    user_chat_map = {}
+    try:
+        ok_us, us_data = sb_request("GET", "user_settings?select=*")
+        if ok_us and isinstance(us_data, list):
+            for u in us_data:
+                if u.get("user_id") and u.get("tg_chat_id"):
+                    user_chat_map[u["user_id"]] = u["tg_chat_id"]
+    except Exception:
+        pass
 
     ok_p, portfolio = sb_request("GET", "portfolio?select=*")
     if ok_p and isinstance(portfolio, list):
         for item in portfolio:
             sym = item["symbol"].upper().strip()
+            item_user = item.get("user_id")
+            item_chat = user_chat_map.get(item_user, TG_CHAT_ID)
+            globals()["_CURRENT_CHAT"] = item_chat
             sh = int(item.get("shares", 0))
             bp = float(item.get("buy_price", 0))
             sl = float(item.get("stop_loss", 0))
@@ -603,6 +640,18 @@ def main():
         updates = fetch_tg_updates(offset)
         for upd in updates:
             uid = upd.get("update_id", 0)
+            cq = upd.get("callback_query")
+            if cq:
+                cb_id = cq.get("id")
+                cb_data = cq.get("data", "")
+                sender_chat = str((cq.get("message") or {}).get("chat", {}).get("id", ""))
+                if sender_chat and (not TG_CHAT_ID or sender_chat == TG_CHAT_ID):
+                    cmd_map = {"portfolio": "محفظتي", "radar": "رادار", "price": "سعر", "buy": "شراء", "sell": "بيع", "be": "تأمين", "help": "مساعدة"}
+                    txt = cmd_map.get(cb_data, cb_data)
+                    handle_command(txt, sender_chat, market_map)
+                    answer_callback_query(cb_id, "تم")
+                save_tg_offset(uid + 1)
+                continue
             msg = upd.get("message") or {}
             text = msg.get("text", "")
             sender_chat = str(msg.get("chat", {}).get("id", ""))
