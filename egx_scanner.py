@@ -2978,8 +2978,8 @@ with tab_lab:
                     b3.markdown('<div class="kpi-card"><div class="kpi-label">⚖️ Profit Factor</div><div class="kpi-val txt-gold">%.2fx</div></div>' % m["profit_factor"], unsafe_allow_html=True)
                     b4.markdown('<div class="kpi-card"><div class="kpi-label">💰 العائد %%</div><div class="kpi-val %s">%+.2f%%</div></div>' % (("txt-green" if m["return_pct"]>=0 else "txt-red"), m["return_pct"]), unsafe_allow_html=True)
                     b5, b6, b7, b8 = st.columns(4)
-                    b5.markdown('<div class="kpi-card"><div class="kpi-label">💵 صافي الربح</div><div class="kpi-val %s">%+,.0f</div></div>' % (("txt-green" if m["total_pnl"]>=0 else "txt-red"), m["total_pnl"]), unsafe_allow_html=True)
-                    b6.markdown('<div class="kpi-card"><div class="kpi-label">⬇️ Max DD</div><div class="kpi-val txt-red">%,.0f</div></div>' % m["max_drawdown"], unsafe_allow_html=True)
+                    b5.markdown(f'<div class="kpi-card"><div class="kpi-label">💵 صافي الربح</div><div class="kpi-val {"txt-green" if m["total_pnl"]>=0 else "txt-red"}">{m["total_pnl"]:+,.0f}</div></div>', unsafe_allow_html=True)
+                    b6.markdown(f'<div class="kpi-card"><div class="kpi-label">⬇️ Max DD</div><div class="kpi-val txt-red">{m["max_drawdown"]:,.0f}</div></div>', unsafe_allow_html=True)
                     b7.markdown('<div class="kpi-card"><div class="kpi-label">🏆 Wins</div><div class="kpi-val txt-green">%d</div></div>' % m["wins"], unsafe_allow_html=True)
                     b8.markdown('<div class="kpi-card"><div class="kpi-label">💔 Losses</div><div class="kpi-val txt-red">%d</div></div>' % m["losses"], unsafe_allow_html=True)
                     if res["equity"]:
