@@ -17,10 +17,10 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 # ==========================================
-# إعدادات الصفحة والتصميم البصري الداكن (V10.5)
+# إعدادات الصفحة والتصميم البصري الداكن (V11.0)
 # ==========================================
 st.set_page_config(
-    page_title="EGX Whale Hunter Pro V10.5",
+    page_title="EGX Whale Hunter Pro V11.0",
     page_icon="🦅",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -34,10 +34,10 @@ st.markdown("""
         font-family: 'Cairo', sans-serif !important;
     }
 
-    /* توحيد الخلفية الداكنة والاتجاه العربي RTL */
+    /* ===== V11.0 Light Theme ===== */
     .stApp, [data-testid="stAppViewContainer"], [data-testid="stHeader"], [data-testid="stToolbar"] {
-        background-color: #0B0F19 !important;
-        color: #F8FAFC !important;
+        background-color: #F1F5F9 !important;
+        color: #0F172A !important;
     }
     .main .block-container, .block-container {
         direction: rtl;
@@ -47,112 +47,78 @@ st.markdown("""
         max-width: 1460px;
     }
 
-    /* تلوين جميع خانات الإدخال (نصوص وأرقام) بالداكن */
     div[data-baseweb="input"], div[data-baseweb="base-input"], input, textarea {
-        background-color: #111827 !important;
-        color: #F8FAFC !important;
-        border-color: #334155 !important;
+        background-color: #FFFFFF !important;
+        color: #0F172A !important;
+        border-color: #CBD5E1 !important;
         border-radius: 8px !important;
     }
-    input::placeholder {
-        color: #64748B !important;
-    }
+    input::placeholder { color: #64748B !important; }
 
-    /* أزرار + و - داخل خانات الأرقام */
     button[data-testid="stNumberInputStepDown"], button[data-testid="stNumberInputStepUp"] {
-        background-color: #1E293B !important;
-        color: #F8FAFC !important;
-        border-color: #334155 !important;
+        background-color: #E2E8F0 !important;
+        color: #0F172A !important;
+        border-color: #CBD5E1 !important;
     }
     button[data-testid="stNumberInputStepDown"]:hover, button[data-testid="stNumberInputStepUp"]:hover {
         background-color: #0284C7 !important;
         color: #FFFFFF !important;
     }
 
-    /* توضيح عناوين الخانات وخيارات الراديو والـ Checkbox */
     label, label p, [data-testid="stWidgetLabel"] p, div[role="radiogroup"] label p, [data-testid="stCheckbox"] label p {
-        color: #CBD5E1 !important;
+        color: #1E293B !important;
         font-weight: 600 !important;
     }
 
-    /* تنسيق الأزرار العادية والأساسية وأزرار التحميل */
     .stButton > button, .stDownloadButton > button, .stLinkButton > a {
-        background-color: #1E293B !important;
-        color: #F8FAFC !important;
-        border: 1px solid #334155 !important;
+        background-color: #FFFFFF !important;
+        color: #1E3A8A !important;
+        border: 1px solid #CBD5E1 !important;
         border-radius: 10px !important;
         font-weight: 700 !important;
         transition: all 0.2s ease;
     }
     .stButton > button:hover, .stDownloadButton > button:hover, .stLinkButton > a:hover {
-        border-color: #38BDF8 !important;
-        color: #38BDF8 !important;
-        background-color: #16213A !important;
+        border-color: #0284C7 !important;
+        color: #0284C7 !important;
+        background-color: #EFF6FF !important;
     }
     .stButton > button[kind="primary"] {
-        background: linear-gradient(135deg, #0284C7 0%, #0369A1 100%) !important;
+        background: linear-gradient(135deg, #0284C7 0%, #1E3A8A 100%) !important;
         color: #FFFFFF !important;
-        border: 1px solid #38BDF8 !important;
+        border: 1px solid #0284C7 !important;
+        box-shadow: 0 4px 14px rgba(2, 132, 199, 0.25);
     }
     .stButton > button[kind="primary"]:hover {
-        background: linear-gradient(135deg, #0369A1 0%, #075985 100%) !important;
+        background: linear-gradient(135deg, #1E3A8A 0%, #1E40AF 100%) !important;
         color: #FFFFFF !important;
     }
 
-    /* القوائم المنسدلة والـ Expander وصندوق رفع الملفات */
     [data-testid="stExpander"], div[data-baseweb="select"] > div, [data-testid="stFileUploaderDropzone"] {
-        background-color: #111827 !important;
-        color: #F8FAFC !important;
-        border-color: #26334D !important;
+        background-color: #FFFFFF !important;
+        color: #0F172A !important;
+        border-color: #CBD5E1 !important;
         border-radius: 10px !important;
     }
     ul[data-baseweb="menu"] {
-        background-color: #111827 !important;
-        color: #F8FAFC !important;
+        background-color: #FFFFFF !important;
+        color: #0F172A !important;
     }
 
-    /* الهيدر الرئيسي */
-    .hero-banner {
-        background: linear-gradient(135deg, rgba(15, 23, 42, 0.96) 0%, rgba(30, 41, 59, 0.92) 100%);
-        border: 1px solid rgba(56, 189, 248, 0.3);
-        border-right: 5px solid #38BDF8;
-        border-radius: 16px;
-        padding: 16px 22px;
-        margin-bottom: 14px;
-        box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        flex-wrap: wrap;
-        gap: 12px;
-    }
-    .hero-title { font-size: 24px; font-weight: 900; color: #FFFFFF; letter-spacing: 0.3px; }
-    .hero-accent { color: #38BDF8; }
-    .hero-sub { font-size: 13px; color: #94A3B8; margin-top: 3px; }
-    .session-pill {
-        background: rgba(11, 15, 25, 0.9);
-        border: 1px solid #38BDF8;
-        color: #38BDF8;
-        padding: 7px 15px;
-        border-radius: 999px;
-        font-weight: 800;
-        font-size: 13px;
-    }
-
-    /* تصميم علامات التبويب (Tabs) */
     .stTabs [data-baseweb="tab-list"] {
         gap: 8px;
-        background-color: rgba(19, 28, 49, 0.85);
+        background-color: #FFFFFF;
         padding: 8px 10px;
         border-radius: 14px;
-        border: 1px solid #26334D;
+        border: 1px solid #CBD5E1;
         flex-wrap: wrap;
+        box-shadow: 0 2px 8px rgba(15, 23, 42, 0.05);
     }
     .stTabs [data-baseweb="tab"] {
         height: 42px;
         background-color: transparent;
         border-radius: 10px;
-        color: #94A3B8 !important;
+        color: #475569 !important;
         font-weight: 700;
         font-size: 14px;
         padding: 0 16px;
@@ -160,57 +126,55 @@ st.markdown("""
         transition: all 0.2s ease;
     }
     .stTabs [data-baseweb="tab"]:hover {
-        background-color: rgba(56, 189, 248, 0.12);
-        color: #F8FAFC !important;
-        border-color: rgba(56, 189, 248, 0.3);
+        background-color: #EFF6FF;
+        color: #0284C7 !important;
+        border-color: #BFDBFE;
     }
     .stTabs [aria-selected="true"] {
-        background: linear-gradient(135deg, #0284C7 0%, #0369A1 100%) !important;
+        background: linear-gradient(135deg, #0284C7 0%, #1E3A8A 100%) !important;
         color: #FFFFFF !important;
-        border-color: #38BDF8 !important;
-        box-shadow: 0 4px 14px rgba(2, 132, 199, 0.35);
+        border-color: #0284C7 !important;
+        box-shadow: 0 4px 14px rgba(2, 132, 199, 0.30);
     }
-    .stTabs [data-baseweb="tab-highlight"] {
-        display: none;
-    }
+    .stTabs [data-baseweb="tab-highlight"] { display: none; }
 
-    /* البطاقات والمؤشرات */
     .kpi-card {
-        background: linear-gradient(180deg, #151F36 0%, #10182B 100%);
-        border: 1px solid #26334D;
-        border-top: 3px solid #38BDF8;
+        background: linear-gradient(180deg, #FFFFFF 0%, #F8FAFC 100%);
+        border: 1px solid #CBD5E1;
+        border-top: 3px solid #0284C7;
         border-radius: 14px;
         padding: 14px 16px;
         text-align: center;
-        box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+        box-shadow: 0 4px 16px rgba(15, 23, 42, 0.06);
     }
-    .kpi-label { font-size: 12px; color: #94A3B8; margin-bottom: 4px; font-weight: 700; }
-    .kpi-val { font-size: 20px; font-weight: 900; color: #FFFFFF; }
+    .kpi-label { font-size: 12px; color: #475569; margin-bottom: 4px; font-weight: 700; }
+    .kpi-val { font-size: 20px; font-weight: 900; color: #0F172A; }
 
     .pro-card {
-        background: #131C31;
-        border: 1px solid #26334D;
-        border-right: 4px solid #38BDF8;
+        background: #FFFFFF;
+        border: 1px solid #CBD5E1;
+        border-right: 4px solid #0284C7;
         border-radius: 14px;
         padding: 16px 18px;
         margin-bottom: 12px;
-        box-shadow: 0 4px 18px rgba(0,0,0,0.22);
+        box-shadow: 0 4px 18px rgba(15, 23, 42, 0.06);
     }
     .top-card {
-        background: linear-gradient(180deg, #17233E 0%, #101726 100%);
-        border: 1px solid #2B3B59;
+        background: linear-gradient(180deg, #FFFFFF 0%, #F8FAFC 100%);
+        border: 1px solid #CBD5E1;
         border-radius: 14px;
         padding: 15px;
         margin-bottom: 10px;
+        box-shadow: 0 4px 14px rgba(15, 23, 42, 0.05);
     }
     .top-card-gold {
-        border: 1px solid #FACC15;
-        box-shadow: 0 0 22px rgba(250, 204, 21, 0.14);
+        border: 1px solid #EAB308;
+        box-shadow: 0 0 22px rgba(234, 179, 8, 0.18);
     }
     .stock-header-strip {
-        background: linear-gradient(90deg, #131C31 0%, #1B2845 100%);
-        border: 1px solid #334155;
-        border-right: 5px solid #FACC15;
+        background: linear-gradient(90deg, #FFFFFF 0%, #EFF6FF 100%);
+        border: 1px solid #CBD5E1;
+        border-right: 5px solid #EAB308;
         border-radius: 14px;
         padding: 14px 20px;
         margin-bottom: 14px;
@@ -219,22 +183,54 @@ st.markdown("""
         align-items: center;
         flex-wrap: wrap;
         gap: 12px;
+        box-shadow: 0 4px 14px rgba(15, 23, 42, 0.05);
     }
 
-    /* الشارات والتنبيهات */
-    .badge-bull { background: rgba(34,197,94,0.16); color: #4ADE80; border: 1px solid #22C55E; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; }
-    .badge-bear { background: rgba(239,68,68,0.16); color: #F87171; border: 1px solid #EF4444; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; }
-    .badge-warn { background: rgba(250,204,21,0.16); color: #FACC15; border: 1px solid #EAB308; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+    .badge-bull { background: #DCFCE7; color: #15803D; border: 1px solid #86EFAC; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+    .badge-bear { background: #FEE2E2; color: #B91C1C; border: 1px solid #FCA5A5; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+    .badge-warn { background: #FEF3C7; color: #92400E; border: 1px solid #FCD34D; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; }
 
-    .alert-box-success { background: rgba(22,101,52,0.28); border: 1px solid #22C55E; border-right: 5px solid #22C55E; border-radius: 12px; padding: 12px 16px; margin-bottom: 10px; color: #ECFDF5; }
-    .alert-box-warn { background: rgba(133,77,14,0.28); border: 1px solid #EAB308; border-right: 5px solid #EAB308; border-radius: 12px; padding: 12px 16px; margin-bottom: 10px; color: #FEFCE8; }
-    .alert-box-danger { background: rgba(153,27,27,0.32); border: 1px solid #EF4444; border-right: 5px solid #EF4444; border-radius: 12px; padding: 12px 16px; margin-bottom: 10px; color: #FEF2F2; }
-    .news-item { background: #131C31; border: 1px solid #26334D; border-radius: 12px; padding: 12px 15px; margin-bottom: 8px; }
+    .alert-box-success { background: #ECFDF5; border: 1px solid #86EFAC; border-right: 5px solid #22C55E; border-radius: 12px; padding: 12px 16px; margin-bottom: 10px; color: #064E3B; }
+    .alert-box-warn { background: #FFFBEB; border: 1px solid #FCD34D; border-right: 5px solid #EAB308; border-radius: 12px; padding: 12px 16px; margin-bottom: 10px; color: #78350F; }
+    .alert-box-danger { background: #FEF2F2; border: 1px solid #FCA5A5; border-right: 5px solid #EF4444; border-radius: 12px; padding: 12px 16px; margin-bottom: 10px; color: #7F1D1D; }
+    .news-item { background: #FFFFFF; border: 1px solid #CBD5E1; border-radius: 12px; padding: 12px 15px; margin-bottom: 8px; }
 
-    .txt-green { color: #4ADE80; } .txt-red { color: #F87171; } .txt-gold { color: #FACC15; }
-    .txt-cyan { color: #38BDF8; } .txt-white { color: #F8FAFC; } .txt-muted { color: #94A3B8; }
+    .txt-green { color: #15803D; } .txt-red { color: #B91C1C; } .txt-gold { color: #B45309; }
+    .txt-cyan { color: #0369A1; } .txt-white { color: #0F172A; } .txt-muted { color: #475569; }
+
+    .hero-banner {
+        background: linear-gradient(135deg, #FFFFFF 0%, #EFF6FF 100%);
+        border: 1px solid #BFDBFE;
+        border-right: 5px solid #0284C7;
+        border-radius: 16px;
+        padding: 16px 22px;
+        margin-bottom: 14px;
+        box-shadow: 0 8px 28px rgba(2, 132, 199, 0.10);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 12px;
+    }
+    .hero-title { font-size: 24px; font-weight: 900; color: #0F172A; letter-spacing: 0.3px; }
+    .hero-accent { color: #0284C7; }
+    .hero-sub { font-size: 13px; color: #475569; margin-top: 3px; }
+    .session-pill {
+        background: #EFF6FF;
+        border: 1px solid #0284C7;
+        color: #0284C7;
+        padding: 7px 15px;
+        border-radius: 999px;
+        font-weight: 800;
+        font-size: 13px;
+    }
+
+    .top-card:hover { transform: translateY(-2px); transition: transform .2s ease; }
+    .alert-box-success, .alert-box-warn, .alert-box-danger { animation: fadeIn .35s ease; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(4px);} to { opacity:1; transform: translateY(0);} }
 </style>
 """, unsafe_allow_html=True)
+
 
 # ==========================================
 # قاموس أسماء الشركات المصرية والأسهم القيادية
@@ -876,6 +872,51 @@ def analyze_intraday_flow(q: dict, fallback_close: float = 0.0, session_progress
         "action_hint": hint
     }
 
+def evaluate_smart_stop_loss(sym: str, curr_p: float, sl: float, buy_p: float, flow_res: dict, alert_buffer_pct: float = 2.5) -> dict:
+    """
+    محرك الوقف الذكي الهجين (V11.0):
+    - كسر عميق >= 1.5% أسفل الوقف -> خروج فوري.
+    - سيولة بيعية مؤسسية: RVOL >= 1.6x و (VWAP diff <= -0.8% أو flow_score <= -35).
+    - انهيار زخم: RSI15 <= 35 + CLV <= 15% + RVOL >= 1.2x.
+    خلاف ذلك: كسر لحظي تحت المراقبة (انتظار تأكيد الإغلاق 14:10-14:30).
+    """
+    result = {"action": "HOLD", "reason": "داخل النطاق الآمن", "is_hard_break": False, "is_intraday_break": False}
+    if sl <= 0 or curr_p <= 0:
+        return result
+
+    dist_sl_pct = ((curr_p - sl) / curr_p) * 100.0
+    deep_break = dist_sl_pct <= -1.5
+
+    rvol = float(flow_res.get("rel_vol", 1.0) or 1.0)
+    vwap_diff = float(flow_res.get("vwap_diff_pct", 0.0) or 0.0)
+    flow_score = int(flow_res.get("flow_score", 0) or 0)
+    rsi15 = float(flow_res.get("rsi15", 50.0) or 50.0)
+    clv = float(flow_res.get("clv_pct", 50.0) or 50.0)
+
+    inst_sell = (rvol >= 1.6) and (vwap_diff <= -0.8 or flow_score <= -35)
+    momentum_collapse = (rsi15 <= 35) and (clv <= 15) and (rvol >= 1.2)
+
+    if curr_p <= sl:
+        if deep_break or inst_sell or momentum_collapse:
+            result["action"] = "EXIT_NOW"
+            result["is_hard_break"] = True
+            if deep_break:
+                result["reason"] = f"كسر عميق أسفل الوقف ({dist_sl_pct:.2f}% <= -1.5%)"
+            elif inst_sell:
+                result["reason"] = f"سيولة بيعية مؤسسية (RVOL {rvol:.2f}x, VWAP {vwap_diff:+.2f}%)"
+            else:
+                result["reason"] = f"انهيار زخم (RSI15 {rsi15:.1f}, CLV {clv:.0f}%)"
+        else:
+            result["action"] = "WATCH_CLOSE"
+            result["is_intraday_break"] = True
+            result["reason"] = f"كسر لحظي تحت المراقبة (يبعد {dist_sl_pct:.2f}% عن الوقف) - انتظار تأكيد الإغلاق"
+    elif 0 < dist_sl_pct <= alert_buffer_pct:
+        result["action"] = "NEAR_SL"
+        result["reason"] = f"قرب الوقف ({dist_sl_pct:.1f}%)"
+    return result
+
+
+
 def score_stock_from_tv(q: dict, market_median_perf1m: float, capital: float, risk_pct: float, fee_rate: float, session_progress: float) -> dict:
     sym = q["symbol"]
     close = q["close"]
@@ -1505,7 +1546,7 @@ sb_badge = "☁️ سحابة Supabase متصلة" if cloud_connected else "💾
 st.markdown(f"""
 <div class="hero-banner">
     <div>
-        <div class="hero-title">🦅 <span class="hero-accent">EGX WHALE HUNTER</span> PRO <span style="font-size:13px;color:#FACC15;">V10.5</span></div>
+        <div class="hero-title">🦅 <span class="hero-accent">EGX WHALE HUNTER</span> PRO <span style="font-size:13px;color:#FACC15;">V11.0</span></div>
         <div class="hero-sub">🌐 تغطية ({len(raw_egx_tv_map)} سهم) • {sb_badge} • 💼 محفظتي ({len(portfolio_clean_syms)}) • {tg_badge} • آخر تحديث: {last_live_sync}</div>
     </div>
     <div class="session-pill">{session_info['badge']}</div>
@@ -1643,11 +1684,17 @@ for item in my_portfolio:
     dist_tp1_pct = ((tp1 - curr_p) / curr_p) * 100.0
 
     alert_status, alert_code, tg_body = "⏳ داخل النطاق الآمن", None, None
-    if curr_p <= sl:
-        alert_status, alert_code = "🚨 كسر وقف الخسارة!", "HIT_SL"
-        active_alerts.append(("danger", f"🚨 <b>عاجل ({sym} — {comp_name}):</b> السعر (<b>{curr_p}</b>) كسر الوقف (<b>{sl}</b>)!"))
-        tg_body = f"🚨 <b>كسر وقف الخسارة — {sym}</b> ({comp_name})\nالسعر: <b>{curr_p}</b> | الوقف: <b>{sl}</b>"
-    elif 0 < dist_sl_pct <= alert_buffer_pct:
+    flow_res = sinfo["intraday_flow"] if sinfo else analyze_intraday_flow({}, fallback_close=curr_p, session_progress=session_info["progress"])
+    smart = evaluate_smart_stop_loss(sym, curr_p, sl, buy_p, flow_res, alert_buffer_pct)
+    if smart["action"] == "EXIT_NOW":
+        alert_status, alert_code = "🚨 كسر وقف (خروج فوري!)", "HIT_SL"
+        active_alerts.append(("danger", f"🚨 <b>خروج فوري ({sym} — {comp_name}):</b> {smart['reason']} | السعر (<b>{curr_p}</b>) | الوقف (<b>{sl}</b>)!"))
+        tg_body = f"🚨 <b>خروج فوري — {sym}</b> ({comp_name})\n{smart['reason']}\nالسعر: <b>{curr_p}</b> | الوقف: <b>{sl}</b>"
+    elif smart["action"] == "WATCH_CLOSE":
+        alert_status, alert_code = f"👁️ كسر لحظي تحت المراقبة", "NEAR_SL"
+        active_alerts.append(("warn", f"👁️ <b>كسر لحظي ({sym}):</b> {smart['reason']} — انتظار تأكيد الإغلاق (14:10-14:30)."))
+        tg_body = f"👁️ <b>كسر لحظي — {sym}</b>\n{smart['reason']}"
+    elif smart["action"] == "NEAR_SL":
         alert_status, alert_code = f"⚠️ قرب الوقف ({dist_sl_pct:.1f}%)", "NEAR_SL"
         active_alerts.append(("warn", f"⚠️ <b>تحذير ({sym}):</b> على بُعد <b>{dist_sl_pct:.1f}%</b> من الوقف ({sl})."))
         tg_body = f"⚠️ <b>قرب وقف الخسارة — {sym}</b>\nالسعر: <b>{curr_p}</b> | الوقف: <b>{sl}</b>"
@@ -1736,7 +1783,7 @@ with tab_radar:
                 <div style="font-size:13px;margin-bottom:8px;" class="txt-muted">
                     السعر: <b class="txt-white">{item['الإغلاق']}</b> (<span class="{'txt-green' if item['التغير %']>=0 else 'txt-red'}">{item['التغير %']:+.2f}%</span>) • وتيرة: <b class="txt-gold">{item['الفوليوم']}x</b> • {item['الرأي اللحظي']}
                 </div>
-                <div style="display:flex;justify-content:space-between;background:#0B0F19;padding:8px 10px;border-radius:10px;font-size:12px;">
+                <div style="display:flex;justify-content:space-between;background:#F8FAFC;padding:8px 10px;border-radius:10px;font-size:12px;">
                     <span>🛑 الوقف: <b class="txt-red">{item['الوقف (2xATR)']}</b></span>
                     <span>🎯 TP1: <b class="txt-green">{item['TP1']}</b></span>
                     <span>💰 صافي: <b class="txt-green">{item['صافي TP1']:,.0f}</b></span>
@@ -1871,7 +1918,7 @@ with tab_portfolio:
                 fig_p.add_hline(y=p_item["وقف الخسارة"], line_dash="dash", line_color="#F87171", annotation_text=f"SL: {p_item['وقف الخسارة']}")
                 fig_p.add_hline(y=p_item["TP1"], line_dash="dash", line_color="#4ADE80", annotation_text=f"TP1: {p_item['TP1']}")
                 fig_p.add_hline(y=p_item["TP2"], line_dash="dash", line_color="#10B981", annotation_text=f"TP2: {p_item['TP2']}")
-                fig_p.update_layout(title=f"📊 مستويات مركزك في {port_sel} ({p_item['اسم الشركة']})", height=420, xaxis_rangeslider_visible=False, template="plotly_dark", paper_bgcolor="#0B0F19", plot_bgcolor="#131C31", margin=dict(l=10, r=10, t=40, b=10))
+                fig_p.update_layout(title=f"📊 مستويات مركزك في {port_sel} ({p_item['اسم الشركة']})", height=420, xaxis_rangeslider_visible=False, template="plotly_white", paper_bgcolor="#FFFFFF", plot_bgcolor="#F8FAFC", margin=dict(l=10, r=10, t=40, b=10))
                 st.plotly_chart(fig_p, use_container_width=True)
 
     # --- فرعي 2.2: إضافة سهم جديد + استيراد مستندات ثاندر ---
@@ -2121,7 +2168,7 @@ with tab_lab:
                     </div>
                     <p class="txt-white"><b>أفضل طلب وعرض:</b> {flow['ba_pressure']} (السبريد: {flow['spread_pct']}%)</p>
                     <ul class="txt-white" style="padding-right:18px;font-size:14px;">{reasons_html}</ul>
-                    <div style="background:#0B0F19;padding:10px;border-radius:8px;border-right:4px solid #38BDF8;">
+                    <div style="background:#F8FAFC;padding:10px;border-radius:8px;border-right:4px solid #38BDF8;">
                         <b class="txt-gold">💡 التوجيه:</b> <span class="txt-white">{flow['action_hint']}</span>
                     </div>
                 </div>
@@ -2165,7 +2212,7 @@ with tab_lab:
                         <div style="width:{buy_bar_w}%;height:100%;background:#22C55E;"></div>
                     </div>
                     <p class="txt-white">📊 صافي الدلتا (Net Delta): <b class="{'txt-green' if net_delta>=0 else 'txt-red'}">{net_delta:+,.0f} سهم ({delta_pct:+.1f}%)</b></p>
-                    <div style="background:#0B0F19;padding:9px 12px;border-radius:8px;">
+                    <div style="background:#F8FAFC;padding:9px 12px;border-radius:8px;">
                         <b>الخلاصة اللحظية:</b> {delta_verdict}
                     </div>
                 </div>
@@ -2188,7 +2235,7 @@ with tab_lab:
                     for ob in smc["obs"]:
                         col_o = "#4ADE80" if "طلب" in ob["النوع"] else "#F87171"
                         fig_smc.add_hrect(y0=ob["من"], y1=ob["إلى"], line_dash="dot", line_color=col_o, fillcolor="rgba(56,189,248,0.08)", annotation_text="OB", annotation_font_size=10)
-                    fig_smc.update_layout(title=f"🏦 مناطق Order Blocks و FVG لسهم {selected_symbol}", height=500, xaxis_rangeslider_visible=False, template="plotly_dark", paper_bgcolor="#0B0F19", plot_bgcolor="#131C31", margin=dict(l=10, r=10, t=40, b=10))
+                    fig_smc.update_layout(title=f"🏦 مناطق Order Blocks و FVG لسهم {selected_symbol}", height=500, xaxis_rangeslider_visible=False, template="plotly_white", paper_bgcolor="#FFFFFF", plot_bgcolor="#F8FAFC", margin=dict(l=10, r=10, t=40, b=10))
                     st.plotly_chart(fig_smc, use_container_width=True)
                 with c2:
                     sweeps_html = "".join([f"<li>{s}</li>" for s in smc["sweeps"]]) if smc["sweeps"] else "<li>لا يوجد سحب سيولة حاد في آخر 10 جلسات.</li>"
@@ -2232,7 +2279,7 @@ with tab_lab:
                             v_cols.append("#4ADE80" if r["Close"] >= r["Open"] else "#F87171")
                     fig_w.add_trace(go.Bar(x=sub_w.index, y=sub_w["Volume"], marker_color=v_cols, name="PVSRA Volume"), row=2, col=1)
                     fig_w.add_trace(go.Scatter(x=sub_w.index, y=sub_w["VolSMA20"], line=dict(color="#FACC15", width=1.4), name="متوسط 20"), row=2, col=1)
-                    fig_w.update_layout(title=f"🐋 بصمة الحيتان PVSRA ونطاق وايكوف: {selected_symbol}", height=500, xaxis_rangeslider_visible=False, template="plotly_dark", paper_bgcolor="#0B0F19", plot_bgcolor="#131C31", margin=dict(l=10, r=10, t=40, b=10))
+                    fig_w.update_layout(title=f"🐋 بصمة الحيتان PVSRA ونطاق وايكوف: {selected_symbol}", height=500, xaxis_rangeslider_visible=False, template="plotly_white", paper_bgcolor="#FFFFFF", plot_bgcolor="#F8FAFC", margin=dict(l=10, r=10, t=40, b=10))
                     st.plotly_chart(fig_w, use_container_width=True)
                 with c2:
                     notes_html = "".join([f"<li style='margin-bottom:6px;'>{n}</li>" for n in wyk["vsa_notes"]])
@@ -2268,7 +2315,7 @@ with tab_lab:
                     fig_vp.add_hrect(y0=cvp["bc"], y1=cvp["tc"], fillcolor="rgba(56,189,248,0.18)", line_color="#38BDF8", line_dash="dot", annotation_text="CPR", row=1, col=1)
                     vp_colors = ["#FACC15" if round(p, 2) == cvp["poc"] else "#38BDF8" for p in cvp["bin_centers"]]
                     fig_vp.add_trace(go.Bar(y=cvp["bin_centers"], x=cvp["vol_hist"], orientation="h", marker_color=vp_colors, name="Volume Profile"), row=1, col=2)
-                    fig_vp.update_layout(title=f"🎯 خريطة CPR وبروفايل السيولة الأفقي: {selected_symbol}", height=510, xaxis_rangeslider_visible=False, template="plotly_dark", paper_bgcolor="#0B0F19", plot_bgcolor="#131C31", showlegend=False, margin=dict(l=10, r=10, t=40, b=10))
+                    fig_vp.update_layout(title=f"🎯 خريطة CPR وبروفايل السيولة الأفقي: {selected_symbol}", height=510, xaxis_rangeslider_visible=False, template="plotly_white", paper_bgcolor="#FFFFFF", plot_bgcolor="#F8FAFC", showlegend=False, margin=dict(l=10, r=10, t=40, b=10))
                     st.plotly_chart(fig_vp, use_container_width=True)
                 with c2:
                     st.markdown(f"""
@@ -2308,7 +2355,7 @@ with tab_lab:
                         ))
                     if harm["prz_low"] and harm["prz_high"]:
                         fig_hm.add_hrect(y0=harm["prz_low"], y1=harm["prz_high"], fillcolor="rgba(250,204,21,0.20)", line_color="#FACC15", annotation_text="PRZ")
-                    fig_hm.update_layout(title=f"🦋 مسح النماذج التوافقية: {selected_symbol}", height=500, xaxis_rangeslider_visible=False, template="plotly_dark", paper_bgcolor="#0B0F19", plot_bgcolor="#131C31", margin=dict(l=10, r=10, t=40, b=10))
+                    fig_hm.update_layout(title=f"🦋 مسح النماذج التوافقية: {selected_symbol}", height=500, xaxis_rangeslider_visible=False, template="plotly_white", paper_bgcolor="#FFFFFF", plot_bgcolor="#F8FAFC", margin=dict(l=10, r=10, t=40, b=10))
                     st.plotly_chart(fig_hm, use_container_width=True)
                 with c2:
                     st.markdown(f"""
@@ -2341,7 +2388,7 @@ with tab_lab:
                         fig_e.add_trace(go.Scatter(x=[p["date"] for p in lp], y=[p["price"] for p in lp], mode="lines+markers+text", line=dict(color="#38BDF8", width=2.8), marker=dict(size=9, color="#FACC15"), text=[p.get("label", "") for p in lp], textposition="top center", name="Waves"))
                     fig_e.add_hline(y=ew_res["invalidation"], line_dash="dash", line_color="#F87171", annotation_text=f"إلغاء: {ew_res['invalidation']}")
                     fig_e.add_hline(y=ew_res["target_1"], line_dash="dot", line_color="#4ADE80", annotation_text=f"هدف 1: {ew_res['target_1']}")
-                    fig_e.update_layout(title=f"🌊 خريطة موجات إليوت: {selected_symbol}", height=500, xaxis_rangeslider_visible=False, template="plotly_dark", paper_bgcolor="#0B0F19", plot_bgcolor="#131C31", margin=dict(l=10, r=10, t=40, b=10))
+                    fig_e.update_layout(title=f"🌊 خريطة موجات إليوت: {selected_symbol}", height=500, xaxis_rangeslider_visible=False, template="plotly_white", paper_bgcolor="#FFFFFF", plot_bgcolor="#F8FAFC", margin=dict(l=10, r=10, t=40, b=10))
                     st.plotly_chart(fig_e, use_container_width=True)
                 with c2:
                     st.markdown(f"""
@@ -2377,7 +2424,7 @@ with tab_lab:
                     fig.add_hline(y=selected_data["الوقف (2xATR)"], line_dash="dash", line_color="#F87171", annotation_text="SL", row=1, col=1)
                     fig.add_hline(y=selected_data["TP1"], line_dash="dash", line_color="#4ADE80", annotation_text="TP1", row=1, col=1)
                     fig.add_trace(go.Bar(x=sub_f.index, y=sub_f["Volume"], marker_color=["#4ADE80" if c >= o else "#F87171" for c, o in zip(sub_f["Close"], sub_f["Open"])], name="الفوليوم"), row=2, col=1)
-                    fig.update_layout(title=f"📈 الشارت الفني ومستويات التنفيذ: {selected_symbol} ({selected_data['اسم الشركة']})", height=520, xaxis_rangeslider_visible=False, template="plotly_dark", paper_bgcolor="#0B0F19", plot_bgcolor="#131C31", margin=dict(l=10, r=10, t=40, b=10))
+                    fig.update_layout(title=f"📈 الشارت الفني ومستويات التنفيذ: {selected_symbol} ({selected_data['اسم الشركة']})", height=520, xaxis_rangeslider_visible=False, template="plotly_white", paper_bgcolor="#FFFFFF", plot_bgcolor="#F8FAFC", margin=dict(l=10, r=10, t=40, b=10))
                     st.plotly_chart(fig, use_container_width=True)
             with c2:
                 st.markdown(f"""
@@ -2547,7 +2594,7 @@ alter table tg_alerts_log disable row level security;
         st.session_state["cfg_tg_port"] = st.checkbox("🔔 إرسال تنبيهات المحفظة تلقائياً", value=tg_auto_port)
         st.session_state["cfg_tg_whales"] = st.checkbox("🐋 تنبيه صفقات الحيتان (سكور 80+)", value=tg_auto_whales)
         if st.button("🧪 إرسال رسالة تجريبية لتليجرام", use_container_width=True):
-            ok_t, msg_t = send_telegram_message(tg_t_in, tg_c_in, "🦅 <b>EGX Whale Hunter Pro V10.5</b>\n✅ النظام السحابي، الألوان الداكنة، وتحليل التدفق الأوتوماتيكي تعمل بنجاح!")
+            ok_t, msg_t = send_telegram_message(tg_t_in, tg_c_in, "🦅 <b>EGX Whale Hunter Pro V11.0</b>\n✅ النظام السحابي، الألوان الداكنة، وتحليل التدفق الأوتوماتيكي تعمل بنجاح!")
             st.success("✅ وصلت الرسالة لتليجرام!") if ok_t else st.error(f"❌ {msg_t}")
 
     with set_c2:

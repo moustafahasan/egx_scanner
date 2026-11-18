@@ -41,6 +41,11 @@ EGX_NAMES = {
     "TANM": "تنمية للاستثمار العقاري", "AREH": "المصرية للمنتجعات",
     "ICEN": "إيكون الهندسية", "ALCN": "الإسكندرية لتداول الحاويات",
     "BONY": "بنيان للتنمية والتجارة",
+    "IDRE": "شركة IDRE (البورصة المصرية)",
+    "ENGC": "شركة ENGC (البورصة المصرية)",
+    "EEII": "شركة EEII (البورصة المصرية)",
+    "ARAB": "العربية للاستثمار (ARAB)",
+    "FERC": "شركة FERC (البورصة المصرية)",
 }
 
 def get_cairo_now() -> datetime:
@@ -441,6 +446,62 @@ def handle_command(text: str, chat_id: str, market_map: dict):
 # ==========================================
 # حلقة المراقبة الآلية والوقف المتحرك
 # ==========================================
+
+def _bg_flow_res(m: dict) -> dict:
+    return {
+        "rel_vol": m.get("rvol", 1.0),
+        "vwap_diff_pct": m.get("vwap_diff", 0.0),
+        "flow_score": m.get("score", 0),
+        "rsi15": m.get("rsi15", 50.0),
+        "clv_pct": 50.0,
+    }
+
+
+def evaluate_smart_stop_loss_bg(sym: str, curr_p: float, sl: float, buy_p: float, flow_res: dict, alert_buffer_pct: float = 2.5) -> dict:
+    """
+    محرك الوقف الذكي الهجين (V11.0):
+    - كسر عميق >= 1.5% أسفل الوقف -> خروج فوري.
+    - سيولة بيعية مؤسسية: RVOL >= 1.6x و (VWAP diff <= -0.8% أو flow_score <= -35).
+    - انهيار زخم: RSI15 <= 35 + CLV <= 15% + RVOL >= 1.2x.
+    خلاف ذلك: كسر لحظي تحت المراقبة (انتظار تأكيد الإغلاق 14:10-14:30).
+    """
+    result = {"action": "HOLD", "reason": "داخل النطاق الآمن", "is_hard_break": False, "is_intraday_break": False}
+    if sl <= 0 or curr_p <= 0:
+        return result
+
+    dist_sl_pct = ((curr_p - sl) / curr_p) * 100.0
+    deep_break = dist_sl_pct <= -1.5
+
+    rvol = float(flow_res.get("rel_vol", 1.0) or 1.0)
+    vwap_diff = float(flow_res.get("vwap_diff_pct", 0.0) or 0.0)
+    flow_score = int(flow_res.get("flow_score", 0) or 0)
+    rsi15 = float(flow_res.get("rsi15", 50.0) or 50.0)
+    clv = float(flow_res.get("clv_pct", 50.0) or 50.0)
+
+    inst_sell = (rvol >= 1.6) and (vwap_diff <= -0.8 or flow_score <= -35)
+    momentum_collapse = (rsi15 <= 35) and (clv <= 15) and (rvol >= 1.2)
+
+    if curr_p <= sl:
+        if deep_break or inst_sell or momentum_collapse:
+            result["action"] = "EXIT_NOW"
+            result["is_hard_break"] = True
+            if deep_break:
+                result["reason"] = f"كسر عميق أسفل الوقف ({dist_sl_pct:.2f}% <= -1.5%)"
+            elif inst_sell:
+                result["reason"] = f"سيولة بيعية مؤسسية (RVOL {rvol:.2f}x, VWAP {vwap_diff:+.2f}%)"
+            else:
+                result["reason"] = f"انهيار زخم (RSI15 {rsi15:.1f}, CLV {clv:.0f}%)"
+        else:
+            result["action"] = "WATCH_CLOSE"
+            result["is_intraday_break"] = True
+            result["reason"] = f"كسر لحظي تحت المراقبة (يبعد {dist_sl_pct:.2f}% عن الوقف) - انتظار تأكيد الإغلاق"
+    elif 0 < dist_sl_pct <= alert_buffer_pct:
+        result["action"] = "NEAR_SL"
+        result["reason"] = f"قرب الوقف ({dist_sl_pct:.1f}%)"
+    return result
+
+
+
 def run_auto_monitor(market_map: dict):
     today_str = get_cairo_now().strftime("%Y-%m-%d")
     time_str = get_cairo_now().strftime("%H:%M")
@@ -505,9 +566,12 @@ def run_auto_monitor(market_map: dict):
             dist_sl = ((cp - sl) / cp) * 100.0
             dist_tp1 = ((tp1 - cp) / cp) * 100.0
 
-            if cp <= sl:
-                send_once(f"{today_str}_{sym}_HIT_SL", f"🚨 <b>كسر وقف الخسارة — {sym}</b>\nالسعر: <b>{cp}</b> | الوقف: <b>{sl}</b>")
-            elif 0 < dist_sl <= ALERT_BUFFER_PCT:
+            smart = evaluate_smart_stop_loss_bg(sym, cp, sl, bp, _bg_flow_res(m), ALERT_BUFFER_PCT)
+            if smart["action"] == "EXIT_NOW":
+                send_once(f"{today_str}_{sym}_HIT_SL", f"🚨 <b>خروج فوري — {sym}</b>\n{smart['reason']}\nالسعر: <b>{cp}</b> | الوقف: <b>{sl}</b>")
+            elif smart["action"] == "WATCH_CLOSE":
+                send_once(f"{today_str}_{sym}_INTRADAY_BREAK", f"👁️ <b>كسر لحظي — {sym}</b>\n{smart['reason']}\nالسعر: <b>{cp}</b> | الوقف: <b>{sl}</b> (انتظار تأكيد الإغلاق 14:10-14:30)")
+            elif smart["action"] == "NEAR_SL":
                 send_once(f"{today_str}_{sym}_NEAR_SL", f"⚠️ <b>قرب الوقف — {sym}</b>\nالسعر: <b>{cp}</b> (يبعد {dist_sl:.1f}% عن {sl})")
             elif cp >= tp2:
                 send_once(f"{today_str}_{sym}_HIT_TP2", f"🏆 <b>تحقق TP2 — {sym}</b>\nالسعر: <b>{cp}</b> | الربح: <b>{net_pnl:+,.0f} ج.م</b>")
