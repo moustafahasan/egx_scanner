@@ -214,7 +214,8 @@ def fetch_egx_market() -> dict:
 
             atr = float(rec.get("ATR") or (close_p * 0.025))
             ema20, ema50, ema200 = float(rec.get("EMA20") or close_p), float(rec.get("EMA50") or close_p), float(rec.get("EMA200") or close_p)
-            vwap = float(rec.get("VWAP") or close_p)
+            _v = rec.get("VWAP")
+            vwap = float(_v) if _v not in (None, 0, "0", "") else close_p
             vol = float(rec.get("volume") or 0.0)
             avg_v = float(rec.get("average_volume_10d_calc") or 0.0)
             rvol = (vol / (avg_v * prog)) if avg_v > 0 else 1.0

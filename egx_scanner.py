@@ -997,7 +997,7 @@ def fetch_full_egx_tv_scanner(nonce: int = 0):
                 "rsi": float(rec.get("RSI") or 50.0),
                 "macd": float(rec.get("MACD.macd") or 0.0),
                 "macds": float(rec.get("MACD.signal") or 0.0),
-                "vwap": float(rec.get("VWAP") or close_p),
+                "vwap": (float(rec.get("VWAP")) if rec.get("VWAP") not in (None, 0, "0", "") else close_p),
                 "rsi15": float(rec.get("RSI|15") or 50.0),
                 "macd15": float(rec.get("MACD.macd|15") or 0.0),
                 "macds15": float(rec.get("MACD.signal|15") or 0.0),
@@ -1020,7 +1020,8 @@ def fetch_full_egx_tv_scanner(nonce: int = 0):
 # ==========================================
 def analyze_intraday_flow(q: dict, fallback_close: float = 0.0, session_progress: float = 1.0) -> dict:
     close = float(q.get("close") or fallback_close or 0.0)
-    vwap = float(q.get("vwap") or close or 0.0)
+    _v = q.get("vwap")
+    vwap = float(_v) if _v not in (None, 0, "0", "") else (close or 0.0)
     rsi15 = float(q.get("rsi15") or 50.0)
     macd15 = float(q.get("macd15") or 0.0)
     macds15 = float(q.get("macds15") or 0.0)
@@ -1853,6 +1854,13 @@ def fetch_stock_news(symbol_clean: str) -> list:
 # ==========================================
 if not is_authenticated():
     st.markdown('### Auth (Supabase)')
+    with st.expander('Supabase settings (once)', expanded=True):
+        u = st.text_input('Supabase URL:', value=st.session_state.get('sb_url_val', get_secret_safe('SUPABASE_URL')), key='auth_sb_url')
+        k = st.text_input('Supabase Key (anon):', value=st.session_state.get('sb_key_val', get_secret_safe('SUPABASE_KEY')), type='password', key='auth_sb_key')
+        if st.button('Save'):
+            st.session_state['sb_url_val'] = u
+            st.session_state['sb_key_val'] = k
+            st.success('Saved.')
     with st.form('auth_form'):
         ae = st.text_input('Email:', key='auth_email_in')
         ap = st.text_input('Password:', type='password', key='auth_pass_in')
@@ -2206,7 +2214,8 @@ with tab_radar:
         medals = ["👑 المركز #1", "🔥 المركز #2", "⚡ المركز #3"]
         for idx, (cbox, item) in enumerate(zip(tcols, top_n)):
             cbox.markdown(f"""
-            <div class="{'top-card top-card-gold' if idx==0 else 'top-card'}">
+            <a href="{item['TradingView']}" target="_blank" style="text-decoration:none;color:inherit;display:block;">
+            <div class="{'top-card top-card-gold' if idx==0 else 'top-card'}" style="cursor:pointer;">
                 <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
                     <span class="txt-gold" style="font-weight:800;">{medals[idx]}</span>
                     <span class="badge-bull">{item['نوع الإشارة']}</span>
@@ -2225,6 +2234,7 @@ with tab_radar:
                     <span>💰 صافي: <b class="txt-green">{item['صافي TP1']:,.0f}</b></span>
                 </div>
             </div>
+            </a>
             """, unsafe_allow_html=True)
 
         st.write("")
