@@ -545,7 +545,7 @@ except ImportError:
                                 extracted_ops.append({
                                     "المصدر": up.name, "العملية": ln_side, "الرمز": ln_sym,
                                     "اسم الشركة": known_names.get(ln_sym, ln_sym),
-                                    "الكمية": qty, "السعر": round(price, 2),
+                                    "الكمية": qty, "السعر": round(price, 4),
                                 })
                                 found_in_lines = True
 
@@ -558,7 +558,7 @@ except ImportError:
                             extracted_ops.append({
                                 "المصدر": up.name, "العملية": doc_side, "الرمز": doc_sym,
                                 "اسم الشركة": known_names.get(doc_sym, doc_sym),
-                                "الكمية": qty, "السعر": round(price, 2),
+                                "الكمية": qty, "السعر": round(price, 4),
                             })
                 except Exception:
                     pass
@@ -585,7 +585,7 @@ except ImportError:
                             extracted_ops.append({
                                 "المصدر": up.name, "العملية": side, "الرمز": sym,
                                 "اسم الشركة": known_names.get(sym, sym),
-                                "الكمية": qty, "السعر": round(price, 2),
+                                "الكمية": qty, "السعر": round(price, 4),
                             })
                 except Exception:
                     pass
@@ -866,10 +866,10 @@ def record_closed_trade(symbol: str, shares: int, buy_price: float, sell_price: 
         "symbol": sym,
         "user_id": st.session_state.get("auth_user_id") if is_authenticated() else None,
         "shares": int(shares),
-        "buy_price": round(buy_price, 2),
-        "sell_price": round(sell_price, 2),
-        "net_pnl": round(net_pnl, 2),
-        "pnl_pct": round(pnl_pct, 2),
+        "buy_price": round(buy_price, 4),
+        "sell_price": round(sell_price, 4),
+        "net_pnl": round(net_pnl, 4),
+        "pnl_pct": round(pnl_pct, 4),
         "closed_at": get_cairo_now().isoformat()
     }
     _sb_request("POST", "closed_trades", payload=[row])
@@ -1039,7 +1039,7 @@ def analyze_intraday_flow(q: dict, fallback_close: float = 0.0, session_progress
     rel_vol = (vol / expected_vol) if expected_vol > 0 else 1.0
 
     spread_pct = ((ask - bid) / close * 100.0) if (bid > 0 and ask > bid and close > 0) else 0.0
-    ba_pressure = f"طلب {bid:.2f} / عرض {ask:.2f}" if (bid > 0 and ask > 0) else "غير متاح خارج الجلسة"
+    ba_pressure = f"طلب {bid:.4f} / عرض {ask:.4f}" if (bid > 0 and ask > 0) else "غير متاح خارج الجلسة"
 
     f_score = 0
     reasons = []
@@ -1094,14 +1094,14 @@ def analyze_intraday_flow(q: dict, fallback_close: float = 0.0, session_progress
         hint = "حركة عرضية متوازنة؛ انتظر اختراق VWAP بسيولة واضحة قبل زيادة المراكز."
 
     return {
-        "vwap": round(vwap, 2),
-        "vwap_diff_pct": round(vwap_diff_pct, 2),
+        "vwap": round(vwap, 4),
+        "vwap_diff_pct": round(vwap_diff_pct, 4),
         "rsi15": round(rsi15, 1),
-        "macd15": round(macd15, 3),
-        "macds15": round(macds15, 3),
+        "macd15": round(macd15, 4),
+        "macds15": round(macds15, 4),
         "clv_pct": round(clv_pct, 1),
-        "rel_vol": round(rel_vol, 2),
-        "spread_pct": round(spread_pct, 2),
+        "rel_vol": round(rel_vol, 4),
+        "spread_pct": round(spread_pct, 4),
         "ba_pressure": ba_pressure,
         "flow_score": f_score,
         "verdict": verdict,
@@ -1204,7 +1204,7 @@ def run_simple_backtest(df, capital=100000.0, risk_pct=1.5, fee_rate=0.0016):
                 fees = (pos["cost"] + proceeds) * fee_rate
                 pnl = proceeds - pos["cost"] - fees
                 cash += pnl
-                trades.append({"entry_date": str(pos["date"])[:10], "exit_date": str(date)[:10], "entry": round(pos["entry"], 2), "exit": round(exit_p, 2), "shares": pos["shares"], "pnl": round(pnl, 2), "reason": reason})
+                trades.append({"entry_date": str(pos["date"])[:10], "exit_date": str(date)[:10], "entry": round(pos["entry"], 4), "exit": round(exit_p, 4), "shares": pos["shares"], "pnl": round(pnl, 4), "reason": reason})
                 equity.append(cash)
                 pos = None
     if pos is not None:
@@ -1213,7 +1213,7 @@ def run_simple_backtest(df, capital=100000.0, risk_pct=1.5, fee_rate=0.0016):
         fees = (pos["cost"] + proceeds) * fee_rate
         pnl = proceeds - pos["cost"] - fees
         cash += pnl
-        trades.append({"entry_date": str(pos["date"])[:10], "exit_date": str(d.index[-1])[:10], "entry": round(pos["entry"], 2), "exit": round(last_close, 2), "shares": pos["shares"], "pnl": round(pnl, 2), "reason": "EOD"})
+        trades.append({"entry_date": str(pos["date"])[:10], "exit_date": str(d.index[-1])[:10], "entry": round(pos["entry"], 4), "exit": round(last_close, 4), "shares": pos["shares"], "pnl": round(pnl, 4), "reason": "EOD"})
         equity.append(cash)
     wins = [t for t in trades if t["pnl"] > 0]
     losses = [t for t in trades if t["pnl"] <= 0]
@@ -1230,9 +1230,9 @@ def run_simple_backtest(df, capital=100000.0, risk_pct=1.5, fee_rate=0.0016):
             maxdd = dd
     metrics = {
         "trades": len(trades), "wins": len(wins), "losses": len(losses),
-        "win_rate": round(wr, 1), "profit_factor": round(pf, 2),
-        "total_pnl": round(total_pnl, 2), "final_equity": round(cash, 2),
-        "max_drawdown": round(maxdd, 2), "return_pct": round((cash - capital) / capital * 100, 2),
+        "win_rate": round(wr, 1), "profit_factor": round(pf, 4),
+        "total_pnl": round(total_pnl, 4), "final_equity": round(cash, 4),
+        "max_drawdown": round(maxdd, 4), "return_pct": round((cash - capital) / capital * 100, 4),
     }
     return {"trades": trades, "equity": equity, "metrics": metrics}
 
@@ -1314,18 +1314,18 @@ def score_stock_from_tv(q: dict, market_median_perf1m: float, capital: float, ri
         "السكور": score,
         "نوع الإشارة": setup_type,
         "الرأي اللحظي": flow_res["short_verdict"],
-        "الإغلاق": round(close, 2),
-        "ATR14": round(atr14, 3),
-        "EMA20": round(ema20, 2),
-        "التغير %": round(pct_change, 2),
-        "الفوليوم": round(pace_rvol, 2),
-        "فرق VWAP %": round(vwap_diff, 2),
+        "الإغلاق": round(close, 4),
+        "ATR14": round(atr14, 4),
+        "EMA20": round(ema20, 4),
+        "التغير %": round(pct_change, 4),
+        "الفوليوم": round(pace_rvol, 4),
+        "فرق VWAP %": round(vwap_diff, 4),
         "القوة النسبية %": round(rs_alpha, 1),
-        "السيولة (مليون)": round(effective_turnover_m, 2),
-        "الوقف (2xATR)": round(stop_loss, 2),
-        "TP1": round(tp1, 2),
-        "TP2": round(tp2, 2),
-        "TP3": round(tp3, 2),
+        "السيولة (مليون)": round(effective_turnover_m, 4),
+        "الوقف (2xATR)": round(stop_loss, 4),
+        "TP1": round(tp1, 4),
+        "TP2": round(tp2, 4),
+        "TP3": round(tp3, 4),
         "الأسهم": shares,
         "قيمة الصفقة": round(position_value, 0),
         "صافي TP1": round(net_profit_tp1, 0),
@@ -1337,7 +1337,8 @@ def score_stock_from_tv(q: dict, market_median_perf1m: float, capital: float, ri
         },
         "intraday_flow": flow_res,
         "tv_raw": q,
-        "TradingView": f"https://www.tradingview.com/chart/?symbol=EGX:{sym}"
+        "TradingView": f"https://www.tradingview.com/chart/?symbol=EGX:{sym}",
+        "الأفق الزمني": "TP1: 3-7 أيام | TP2: 7-14 يوم | TP3: 14-30 يوم (تقديري، ATR يومي)"
     }
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -1407,20 +1408,20 @@ def analyze_smc_ict(df: pd.DataFrame) -> dict:
         if l_curr > h_prev2:
             mitigated = float(sub["Low"].iloc[i + 1:].min()) <= h_prev2 if i + 1 < len(sub) else False
             if not mitigated:
-                fvgs.append({"النوع": "🟢 فجوة شرائية (Bullish FVG)", "من": round(h_prev2, 2), "إلى": round(l_curr, 2), "التاريخ": str(dt_curr)[:10]})
+                fvgs.append({"النوع": "🟢 فجوة شرائية (Bullish FVG)", "من": round(h_prev2, 4), "إلى": round(l_curr, 4), "التاريخ": str(dt_curr)[:10]})
         if h_curr < l_prev2:
             mitigated = float(sub["High"].iloc[i + 1:].max()) >= l_prev2 if i + 1 < len(sub) else False
             if not mitigated:
-                fvgs.append({"النوع": "🔴 فجوة بيعية (Bearish FVG)", "من": round(h_curr, 2), "إلى": round(l_prev2, 2), "التاريخ": str(dt_curr)[:10]})
+                fvgs.append({"النوع": "🔴 فجوة بيعية (Bearish FVG)", "من": round(h_curr, 4), "إلى": round(l_prev2, 4), "التاريخ": str(dt_curr)[:10]})
 
         if c_prev1 < o_prev1 and c_curr > float(sub["High"].iloc[i - 1]):
             ob_low, ob_high = float(sub["Low"].iloc[i - 1]), float(sub["High"].iloc[i - 1])
             if ob_low <= curr_p * 1.15:
-                obs.append({"النوع": "🟢 كتلة طلب مؤسسي (Bullish OB)", "من": round(ob_low, 2), "إلى": round(ob_high, 2), "التاريخ": str(sub.index[i - 1])[:10]})
+                obs.append({"النوع": "🟢 كتلة طلب مؤسسي (Bullish OB)", "من": round(ob_low, 4), "إلى": round(ob_high, 4), "التاريخ": str(sub.index[i - 1])[:10]})
         elif c_prev1 > o_prev1 and c_curr < float(sub["Low"].iloc[i - 1]):
             ob_low, ob_high = float(sub["Low"].iloc[i - 1]), float(sub["High"].iloc[i - 1])
             if ob_high >= curr_p * 0.85:
-                obs.append({"النوع": "🔴 كتلة عرض مؤسسي (Bearish OB)", "من": round(ob_low, 2), "إلى": round(ob_high, 2), "التاريخ": str(sub.index[i - 1])[:10]})
+                obs.append({"النوع": "🔴 كتلة عرض مؤسسي (Bearish OB)", "من": round(ob_low, 4), "إلى": round(ob_high, 4), "التاريخ": str(sub.index[i - 1])[:10]})
 
     pivs = extract_zigzag_pivots(sub, pct_thresh=0.04)
     structure_state, badge_cls = "⚖️ نطاق عرضي (Range)", "badge-warn"
@@ -1438,15 +1439,15 @@ def analyze_smc_ict(df: pd.DataFrame) -> dict:
             structure_state = "🟡 تضييق سيولة (CHoCH محتمل)"
 
     if len(lows_p) >= 2 and float(sub["Low"].tail(10).min()) < lows_p[-2]["price"] and curr_p > lows_p[-2]["price"]:
-        sweeps.append(f"🐋 سحب سيولة أسفل القاع ({lows_p[-2]['price']:.2f}) والارتداد أعلاه (Bullish Liquidity Sweep)")
+        sweeps.append(f"🐋 سحب سيولة أسفل القاع ({lows_p[-2]['price']:.4f}) والارتداد أعلاه (Bullish Liquidity Sweep)")
     if len(highs_p) >= 2 and float(sub["High"].tail(10).max()) > highs_p[-2]["price"] and curr_p < highs_p[-2]["price"]:
-        sweeps.append(f"⚠️ سحب سيولة أعلى القمة ({highs_p[-2]['price']:.2f}) والهبوط أسفلها (Bearish Liquidity Sweep)")
+        sweeps.append(f"⚠️ سحب سيولة أعلى القمة ({highs_p[-2]['price']:.4f}) والهبوط أسفلها (Bearish Liquidity Sweep)")
 
     return {
         "structure": structure_state, "badge_cls": badge_cls,
         "fvgs": fvgs[-5:], "obs": obs[-5:], "sweeps": sweeps,
-        "swing_high": round(last_swing_high, 2) if last_swing_high else None,
-        "swing_low": round(last_swing_low, 2) if last_swing_low else None,
+        "swing_high": round(last_swing_high, 4) if last_swing_high else None,
+        "swing_low": round(last_swing_low, 4) if last_swing_low else None,
     }
 
 def analyze_wyckoff_vsa(df: pd.DataFrame) -> dict:
@@ -1473,7 +1474,7 @@ def analyze_wyckoff_vsa(df: pd.DataFrame) -> dict:
     signals = []
     for dt_idx, row in sub[sub["VolRatio"] >= 2.0].tail(5).iterrows():
         kind = "🟢 شمعة حيتان شرائية (PVSRA)" if row["Close"] >= row["Open"] else "🔴 شمعة حيتان بيعية (PVSRA)"
-        signals.append({"التاريخ": str(dt_idx)[:10], "الإشارة": kind, "السعر": round(float(row["Close"]), 2), "نسبة الفوليوم": f"{row['VolRatio']:.1f}x"})
+        signals.append({"التاريخ": str(dt_idx)[:10], "الإشارة": kind, "السعر": round(float(row["Close"]), 4), "نسبة الفوليوم": f"{row['VolRatio']:.1f}x"})
 
     vsa_notes = []
     if v_ratio >= 2.0 and clv >= 0.65:
@@ -1485,12 +1486,12 @@ def analyze_wyckoff_vsa(df: pd.DataFrame) -> dict:
 
     prior_30_low = float(sub["Low"].iloc[-31:-3].min()) if len(sub) > 35 else box_low
     if float(sub["Low"].tail(3).min()) < prior_30_low and c_p > prior_30_low:
-        vsa_notes.append(f"🐋 **نموذج Spring (كسر كاذب للقاع {prior_30_low:.2f}):** مصيدة دببة كلاسيكية لبدء موجة صعود.")
+        vsa_notes.append(f"🐋 **نموذج Spring (كسر كاذب للقاع {prior_30_low:.4f}):** مصيدة دببة كلاسيكية لبدء موجة صعود.")
 
     return {
         "phase": phase, "badge_cls": badge_cls,
-        "box_high": round(box_high, 2), "box_low": round(box_low, 2),
-        "vol_ratio": round(v_ratio, 2),
+        "box_high": round(box_high, 4), "box_low": round(box_low, 4),
+        "vol_ratio": round(v_ratio, 4),
         "vsa_notes": vsa_notes or ["الحركة السعرية متوافقة مع متوسط أحجام التداول دون شذوذ VSA حاد."],
         "whale_candles": signals
     }
@@ -1540,9 +1541,9 @@ def analyze_cpr_and_vp(df: pd.DataFrame) -> dict:
         verdict, badge_cls = "🟡 تداول داخل منطقة التوازن (Value Area)", "badge-warn"
 
     return {
-        "pivot": round(pivot, 2), "tc": round(cpr_top, 2), "bc": round(cpr_bot, 2),
-        "r1": round(r1, 2), "s1": round(s1, 2), "cpr_width_pct": round(cpr_width_pct, 2),
-        "poc": round(poc_price, 2), "vah": round(vah_price, 2), "val": round(val_price, 2),
+        "pivot": round(pivot, 4), "tc": round(cpr_top, 4), "bc": round(cpr_bot, 4),
+        "r1": round(r1, 4), "s1": round(s1, 4), "cpr_width_pct": round(cpr_width_pct, 4),
+        "poc": round(poc_price, 4), "vah": round(vah_price, 4), "val": round(val_price, 4),
         "bin_centers": bin_centers, "vol_hist": vol_hist,
         "verdict": verdict, "badge_cls": badge_cls
     }
@@ -1584,13 +1585,13 @@ def analyze_harmonic_patterns(df: pd.DataFrame) -> dict:
         target_1 = D["price"] - 0.382 * abs(A["price"] - D["price"])
         target_2 = D["price"] - 0.618 * abs(A["price"] - D["price"])
 
-    prz_low, prz_high = round(prz_center * 0.985, 2), round(prz_center * 1.015, 2)
+    prz_low, prz_high = round(prz_center * 0.985, 4), round(prz_center * 1.015, 4)
     return {
         "detected": True, "pattern_name": direction_txt, "badge_cls": badge_cls,
         "points": [X, A, B, C, D],
         "prz_low": prz_low, "prz_high": prz_high,
-        "target_1": round(target_1, 2), "target_2": round(target_2, 2),
-        "notes": f"نسبة تصحيح B/XA = {ab_xa:.2f} | امتداد D/XA = {ad_xa:.2f}. منطقة الانعكاس المحتملة (PRZ) تقع بين {prz_low} و {prz_high} ج.م (السعر الحالي: {curr_p:.2f})."
+        "target_1": round(target_1, 4), "target_2": round(target_2, 4),
+        "notes": f"نسبة تصحيح B/XA = {ab_xa:.2f} | امتداد D/XA = {ad_xa:.2f}. منطقة الانعكاس المحتملة (PRZ) تقع بين {prz_low} و {prz_high} ج.م (السعر الحالي: {curr_p:.4f})."
     }
 
 def analyze_elliott_waves(df: pd.DataFrame, pct_thresh: float = 0.05) -> dict:
@@ -1599,7 +1600,7 @@ def analyze_elliott_waves(df: pd.DataFrame, pct_thresh: float = 0.05) -> dict:
         lo_p, hi_p = float(df["Low"].min()), float(df["High"].max())
         return {
             "wave_name": "🌊 موجة تأسيسية (1-2)", "badge_cls": "badge-warn",
-            "invalidation": round(lo_p, 2), "target_1": round(hi_p, 2), "target_2": round(hi_p * 1.12, 2),
+            "invalidation": round(lo_p, 4), "target_1": round(hi_p, 4), "target_2": round(hi_p * 1.12, 4),
             "summary": "عدد القمم والقيعان في المدى المختار لا يزال في مراحل التأسيس الأولى.",
             "labeled_pivots": pivs, "rules_check": []
         }
@@ -1610,24 +1611,24 @@ def analyze_elliott_waves(df: pd.DataFrame, pct_thresh: float = 0.05) -> dict:
     if p1 > p0 and p3 > p1:
         w1, w3, w5 = abs(p1 - p0), abs(p3 - p2), abs(p5 - p4)
         rules = [
-            ("عدم كسر الموجة (2) لقاع (0)", f"{p2:.2f} > {p0:.2f}", p2 > p0),
-            ("الموجة (3) ليست الأقصر", f"طولها {w3:.2f}", w3 >= min(w1, w5)),
-            ("عدم تداخل (4) مع قمة (1)", f"{p4:.2f} > {p1:.2f}", p4 > p1),
+            ("عدم كسر الموجة (2) لقاع (0)", f"{p2:.4f} > {p0:.4f}", p2 > p0),
+            ("الموجة (3) ليست الأقصر", f"طولها {w3:.4f}", w3 >= min(w1, w5)),
+            ("عدم تداخل (4) مع قمة (1)", f"{p4:.4f} > {p1:.4f}", p4 > p1),
         ]
-        inv = round(p4, 2)
+        inv = round(p4, 4)
         return {
             "wave_name": "🌊 موجة دافعة صاعدة (1-2-3-4-5)", "badge_cls": "badge-bull",
-            "invalidation": inv, "target_1": round(p5 + 0.618 * w1, 2), "target_2": round(p5 + 1.0 * w1, 2),
+            "invalidation": inv, "target_1": round(p5 + 0.618 * w1, 4), "target_2": round(p5 + 1.0 * w1, 4),
             "summary": f"السهم يتحرك في هيكل موجي صاعد. الحفاظ على قاع الموجة الرابعة ({inv} ج.م) يبقي المستهدفات الصاعدة فعالة.",
             "labeled_pivots": labeled, "rules_check": rules
         }
     else:
-        w_a, inv = abs(p3 - p2), round(p4, 2)
+        w_a, inv = abs(p3 - p2), round(p4, 4)
         return {
             "wave_name": "🌊 موجة تصحيحية هابطة (A-B-C)", "badge_cls": "badge-bear",
-            "invalidation": inv, "target_1": round(max(0.05, p5 - 0.618 * w_a), 2), "target_2": round(max(0.05, p5 - 1.0 * w_a), 2),
+            "invalidation": inv, "target_1": round(max(0.05, p5 - 0.618 * w_a), 4), "target_2": round(max(0.05, p5 - 1.0 * w_a), 4),
             "summary": f"السهم في مسار تصحيحي؛ اختراق قمة التصحيح الفرعية ({inv} ج.م) يلغي السيناريو الهابط.",
-            "labeled_pivots": labeled, "rules_check": [("قمة B أقل من بداية التصحيح", f"{p4:.2f} < {p2:.2f}", p4 < p2)]
+            "labeled_pivots": labeled, "rules_check": [("قمة B أقل من بداية التصحيح", f"{p4:.4f} < {p2:.4f}", p4 < p2)]
         }
 
 ZODIAC_SIGNS_AR = ["♈ الحمل", "♉ الثور", "♊ الجوزاء", "♋ السرطان", "♌ الأسد", "♍ العذراء", "♎ الميزان", "♏ العقرب", "♐ القوس", "♑ الجدي", "♒ الدلو", "♓ الحوت"]
@@ -1680,7 +1681,7 @@ def deg_to_zodiac(deg: float) -> str:
 
 def convert_deg_to_price(deg: float, ref_price: float) -> float:
     if ref_price <= 0:
-        return round(deg, 2)
+        return round(deg, 4)
     scale = 1.0
     while (360.0 / scale) > ref_price * 2.2:
         scale *= 10.0
@@ -1688,7 +1689,7 @@ def convert_deg_to_price(deg: float, ref_price: float) -> float:
         scale /= 10.0
     step, base_val = 360.0 / scale, deg / scale
     lvl = base_val + round((ref_price - base_val) / step) * step
-    return round(lvl + step if lvl <= 0 else lvl, 2)
+    return round(lvl + step if lvl <= 0 else lvl, 4)
 
 def add_egx_trading_days(start_dt: date, trading_days: int) -> date:
     curr, added = start_dt, 0
@@ -1706,7 +1707,7 @@ def compute_gann_and_planetary(pivot_date: date, pivot_price: float, is_pivot_lo
         target_p = (sqrt_p + step) ** 2 if is_pivot_low else (max(0.1, sqrt_p - step)) ** 2
         sq9_prices.append({
             "الزاوية": f"{ang}°",
-            "المستوى السعري": round(target_p, 2),
+            "المستوى السعري": round(target_p, 4),
             "النوع": "مقاومة هندسية ⬆️" if is_pivot_low else "دعم هندسي ⬇️",
             "البعد %": round(((target_p - current_price) / current_price) * 100, 1)
         })
@@ -1998,9 +1999,9 @@ for sym, q_data in raw_egx_tv_map.items():
 for known_sym in set(list(EGX_ARABIC_NAMES.keys()) + portfolio_clean_syms):
     if known_sym not in all_analyzed_map:
         p_item_ref = next((x for x in my_portfolio if x["symbol"].upper().replace(".CA", "").strip() == known_sym), {})
-        c_val = round(float(p_item_ref.get("buy_price", 0.0)), 2)
-        atr_val = round(max(0.01, c_val * 0.025), 3) if c_val > 0 else 0.1
-        sl_val = round(max(0.01, c_val - 2.0 * atr_val), 2) if c_val > 0 else 0.0
+        c_val = round(float(p_item_ref.get("buy_price", 0.0)), 4)
+        atr_val = round(max(0.01, c_val * 0.025), 4) if c_val > 0 else 0.1
+        sl_val = round(max(0.01, c_val - 2.0 * atr_val), 4) if c_val > 0 else 0.0
         r_sh = max(0.01, c_val - sl_val)
         all_analyzed_map[known_sym] = {
             "الرمز": known_sym,
@@ -2010,15 +2011,16 @@ for known_sym in set(list(EGX_ARABIC_NAMES.keys()) + portfolio_clean_syms):
             "الإغلاق": c_val, "ATR14": atr_val, "EMA20": c_val,
             "التغير %": 0.0, "الفوليوم": 0.0, "فرق VWAP %": 0.0, "القوة النسبية %": 0.0, "السيولة (مليون)": 0.0,
             "الوقف (2xATR)": sl_val,
-            "TP1": round(c_val + 1.618 * r_sh, 2) if c_val > 0 else 0.0,
-            "TP2": round(c_val + 2.618 * r_sh, 2) if c_val > 0 else 0.0,
-            "TP3": round(c_val + 3.618 * r_sh, 2) if c_val > 0 else 0.0,
+            "TP1": round(c_val + 1.618 * r_sh, 4) if c_val > 0 else 0.0,
+            "TP2": round(c_val + 2.618 * r_sh, 4) if c_val > 0 else 0.0,
+            "TP3": round(c_val + 3.618 * r_sh, 4) if c_val > 0 else 0.0,
             "الأسهم": 0, "قيمة الصفقة": 0, "صافي TP1": 0,
             "التشخيص الفني": "بيانات السعر تُسحب من شارت Yahoo/TV",
             "score_parts": {"الاتجاه اليومي (30)": 0, "وتيرة السيولة ووايكوف (35)": 0, "التدفق اللحظي VWAP (35)": 0},
             "intraday_flow": analyze_intraday_flow({}, fallback_close=c_val, session_progress=session_info["progress"]),
             "tv_raw": {},
-            "TradingView": f"https://www.tradingview.com/chart/?symbol=EGX:{known_sym}"
+            "TradingView": f"https://www.tradingview.com/chart/?symbol=EGX:{known_sym}",
+            "الأفق الزمني": "— (لا توجد بيانات ATR)"
         }
 
 scanner_results.sort(key=lambda x: (x["السكور"], x["intraday_flow"]["flow_score"], x["الفوليوم"]), reverse=True)
@@ -2048,18 +2050,18 @@ for item in my_portfolio:
     sinfo = all_analyzed_map.get(sym)
     comp_name = sinfo["اسم الشركة"] if sinfo else get_friendly_stock_name(sym)
     curr_p = sinfo["الإغلاق"] if (sinfo and sinfo["الإغلاق"] > 0) else buy_p
-    atr14 = sinfo["ATR14"] if sinfo else round(buy_p * 0.025, 3)
+    atr14 = sinfo["ATR14"] if sinfo else round(buy_p * 0.025, 4)
     ema20 = sinfo.get("EMA20", curr_p) if sinfo else curr_p
     vwap_val = sinfo["intraday_flow"].get("vwap", curr_p) if sinfo else curr_p
 
-    sl = user_sl if user_sl > 0 else round(max(0.01, buy_p - 2.0 * atr14), 2)
+    sl = user_sl if user_sl > 0 else round(max(0.01, buy_p - 2.0 * atr14), 4)
     r_unit = max(0.01, buy_p - sl)
-    tp1 = user_tp1 if user_tp1 > 0 else round(buy_p + 1.618 * r_unit, 2)
-    tp2 = user_tp2 if user_tp2 > 0 else round(buy_p + 2.618 * r_unit, 2)
+    tp1 = user_tp1 if user_tp1 > 0 else round(buy_p + 1.618 * r_unit, 4)
+    tp2 = user_tp2 if user_tp2 > 0 else round(buy_p + 2.618 * r_unit, 4)
 
     sl_updated = False
     if trailing_on:
-        be_price = round(buy_p * (1.0 + fee_rate * 2.0), 2)
+        be_price = round(buy_p * (1.0 + fee_rate * 2.0), 4)
         if curr_p >= tp1 and trailing_stage < 1 and be_price < curr_p:
             sl = max(sl, be_price)
             trailing_stage = 1
@@ -2067,7 +2069,7 @@ for item in my_portfolio:
             active_alerts.append(("success", f"🛡️ <b>تأمين آلي ({sym}):</b> بعد تحقق TP1 تم رفع الوقف للتعادل (<b>{sl} ج.م</b>)."))
         if curr_p >= tp2:
             anchor = max(vwap_val, ema20) if (vwap_val > 0 and ema20 > 0) else curr_p
-            cand_sl = round(min(curr_p - 0.5 * atr14, anchor * 0.992), 2)
+            cand_sl = round(min(curr_p - 0.5 * atr14, anchor * 0.992), 4)
             if cand_sl > sl * 1.003 and cand_sl < curr_p:
                 sl = cand_sl
                 trailing_stage = 2
@@ -2132,14 +2134,15 @@ for item in my_portfolio:
         "الرأي اللحظي": sinfo["الرأي اللحظي"] if sinfo else "⚪ انتظار",
         "حالة التنبيه": alert_status, "الوقف المتحرك": trail_badge,
         "السكور الفني": sinfo["السكور"] if sinfo else 0,
-        "الكمية": shares, "متوسط الشراء": round(buy_p, 2), "السعر الحالي": curr_p,
+        "الكمية": shares, "متوسط الشراء": round(buy_p, 4), "السعر الحالي": curr_p,
         "تغير اليوم %": sinfo["التغير %"] if sinfo else 0.0,
-        "صافي الربح/الخسارة": round(net_pnl, 0), "العائد %": round(net_pnl_pct, 2),
+        "صافي الربح/الخسارة": round(net_pnl, 0), "العائد %": round(net_pnl_pct, 4),
         "وقف الخسارة": sl, "بُعد الوقف %": round(dist_sl_pct, 1),
         "TP1": tp1, "بُعد TP1 %": round(dist_tp1_pct, 1), "TP2": tp2,
         "progress_ratio": min(1.0, max(0.0, (curr_p - sl) / max(0.01, tp1 - sl))),
         "trailing_enabled": trailing_on, "trailing_stage": trailing_stage,
         "TradingView": f"https://www.tradingview.com/chart/?symbol=EGX:{sym}",
+        "الأفق الزمني": (sinfo.get("الأفق الزمني") if sinfo else "—"),
         "stock_info": sinfo
     })
 
@@ -2252,7 +2255,7 @@ with tab_radar:
             df_rad = df_rad[df_rad["نوع الإشارة"] == sig_filter]
 
         st.dataframe(
-            df_rad[["الرمز", "اسم الشركة", "السكور", "الرأي اللحظي", "نوع الإشارة", "الإغلاق", "التغير %", "الفوليوم", "فرق VWAP %", "السيولة (مليون)", "الوقف (2xATR)", "TP1", "TP2", "الأسهم", "صافي TP1", "TradingView"]],
+            df_rad[["الرمز", "اسم الشركة", "السكور", "الرأي اللحظي", "نوع الإشارة", "الإغلاق", "التغير %", "الفوليوم", "فرق VWAP %", "السيولة (مليون)", "الوقف (2xATR)", "TP1", "TP2", "الأسهم", "صافي TP1", "الأفق الزمني", "TradingView"]],
             use_container_width=True, hide_index=True, height=400,
             column_config={
                 "TradingView": st.column_config.LinkColumn("شارت TV", display_text="فتح ↗"),
@@ -2320,7 +2323,7 @@ with tab_portfolio:
                     st.success("✅ تم الإرسال لتليجرام!") if ok_r else st.error(f"❌ {r_m}")
 
             st.dataframe(
-                pd.DataFrame(portfolio_rows)[["الرمز", "اسم الشركة", "الرأي اللحظي", "حالة التنبيه", "الوقف المتحرك", "السكور الفني", "الكمية", "متوسط الشراء", "السعر الحالي", "صافي الربح/الخسارة", "العائد %", "وقف الخسارة", "بُعد الوقف %", "TP1", "TP2", "TradingView"]],
+                pd.DataFrame(portfolio_rows)[["الرمز", "اسم الشركة", "الرأي اللحظي", "حالة التنبيه", "الوقف المتحرك", "السكور الفني", "الكمية", "متوسط الشراء", "السعر الحالي", "صافي الربح/الخسارة", "العائد %", "وقف الخسارة", "بُعد الوقف %", "TP1", "TP2", "الأفق الزمني", "TradingView"]],
                 use_container_width=True, hide_index=True,
                 column_config={
                     "TradingView": st.column_config.LinkColumn("شارت TV", display_text="فتح ↗"),
@@ -2341,7 +2344,7 @@ with tab_portfolio:
             with ps2:
                 st.write(""); st.write("")
                 if st.button(f"🛡️ تأمين {port_sel} للتعادل", use_container_width=True):
-                    be_val = round(p_item["متوسط الشراء"] * (1.0 + fee_rate * 2.0), 2)
+                    be_val = round(p_item["متوسط الشراء"] * (1.0 + fee_rate * 2.0), 4)
                     if p_item["السعر الحالي"] <= be_val:
                         st.warning(f"⚠️ السعر الحالي ({p_item['السعر الحالي']}) أقل من أو يساوي نقطة التعادل ({be_val}).")
                     else:
@@ -2490,17 +2493,17 @@ with tab_portfolio:
                                 old_sh = int(ex_item["shares"])
                                 old_bp = float(ex_item["buy_price"])
                                 tot_sh = old_sh + qty_o
-                                avg_bp = round(((old_sh * old_bp) + (qty_o * prc_o)) / tot_sh, 2)
+                                avg_bp = round(((old_sh * old_bp) + (qty_o * prc_o)) / tot_sh, 4)
                                 upsert_portfolio_item({**ex_item, "shares": tot_sh, "buy_price": avg_bp})
                             else:
                                 s_inf = all_analyzed_map.get(sym_o, {})
                                 atr_v = s_inf.get("ATR14", prc_o * 0.025)
-                                sl_v = round(max(0.01, prc_o - 2.0 * atr_v), 2)
+                                sl_v = round(max(0.01, prc_o - 2.0 * atr_v), 4)
                                 r_u = max(0.01, prc_o - sl_v)
                                 upsert_portfolio_item({
                                     "symbol": sym_o, "shares": qty_o, "buy_price": prc_o,
-                                    "stop_loss": sl_v, "tp1": round(prc_o + 1.618 * r_u, 2),
-                                    "tp2": round(prc_o + 2.618 * r_u, 2),
+                                    "stop_loss": sl_v, "tp1": round(prc_o + 1.618 * r_u, 4),
+                                    "tp2": round(prc_o + 2.618 * r_u, 4),
                                     "trailing_enabled": True, "trailing_stage": 0
                                 })
                             applied_cnt += 1
@@ -2872,7 +2875,7 @@ with tab_lab:
                     fig_vp.add_hline(y=cvp["vah"], line_dash="dash", line_color="#4ADE80", annotation_text=f"VAH: {cvp['vah']}", row=1, col=1)
                     fig_vp.add_hline(y=cvp["val"], line_dash="dash", line_color="#F87171", annotation_text=f"VAL: {cvp['val']}", row=1, col=1)
                     fig_vp.add_hrect(y0=cvp["bc"], y1=cvp["tc"], fillcolor="rgba(56,189,248,0.18)", line_color="#38BDF8", line_dash="dot", annotation_text="CPR", row=1, col=1)
-                    vp_colors = ["#FACC15" if round(p, 2) == cvp["poc"] else "#38BDF8" for p in cvp["bin_centers"]]
+                    vp_colors = ["#FACC15" if round(p, 4) == cvp["poc"] else "#38BDF8" for p in cvp["bin_centers"]]
                     fig_vp.add_trace(go.Bar(y=cvp["bin_centers"], x=cvp["vol_hist"], orientation="h", marker_color=vp_colors, name="Volume Profile"), row=1, col=2)
                     fig_vp.update_layout(title=f"🎯 خريطة CPR وبروفايل السيولة الأفقي: {selected_symbol}", height=510, xaxis_rangeslider_visible=False, template=TPL, paper_bgcolor="#FFFFFF", plot_bgcolor="#F8FAFC", showlegend=False, margin=dict(l=10, r=10, t=40, b=10))
                     st.plotly_chart(fig_vp, use_container_width=True)
@@ -2909,7 +2912,7 @@ with tab_lab:
                             x=[p["date"] for p in pts], y=[p["price"] for p in pts],
                             mode="lines+markers+text", line=dict(color="#FACC15", width=3),
                             marker=dict(size=10, color="#38BDF8"),
-                            text=[f"{l} ({p['price']:.2f})" for l, p in zip(lbls, pts)],
+                            text=[f"{l} ({p['price']:.4f})" for l, p in zip(lbls, pts)],
                             textposition="top center", name="XABCD"
                         ))
                     if harm["prz_low"] and harm["prz_high"]:

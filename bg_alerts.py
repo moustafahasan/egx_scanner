@@ -243,23 +243,23 @@ def fetch_egx_market() -> dict:
             if float(rec.get("MACD.macd|15") or 0) > float(rec.get("MACD.signal|15") or 0):
                 score += 7
 
-            sl = round(max(0.01, close_p - 2.0 * atr), 2)
+            sl = round(max(0.01, close_p - 2.0 * atr), 4)
             r_sh = max(0.01, close_p - sl)
             market_map[sym] = {
                 "symbol": sym,
                 "name": EGX_NAMES.get(sym, str(rec.get("description") or sym)),
-                "close": round(close_p, 2),
-                "change": round(chg, 2),
-                "atr": round(atr, 3),
-                "ema20": round(ema20, 2),
-                "vwap": round(vwap, 2),
-                "vwap_diff": round(vwap_diff, 2),
-                "rvol": round(rvol, 2),
+                "close": round(close_p, 4),
+                "change": round(chg, 4),
+                "atr": round(atr, 4),
+                "ema20": round(ema20, 4),
+                "vwap": round(vwap, 4),
+                "vwap_diff": round(vwap_diff, 4),
+                "rvol": round(rvol, 4),
                 "rsi15": round(rsi15, 1),
                 "score": min(100, score),
                 "sl": sl,
-                "tp1": round(close_p + 1.618 * r_sh, 2),
-                "tp2": round(close_p + 2.618 * r_sh, 2),
+                "tp1": round(close_p + 1.618 * r_sh, 4),
+                "tp2": round(close_p + 2.618 * r_sh, 4),
             }
     except Exception as e:
         print(f"[TV Fetch Error]: {e}")
@@ -361,16 +361,16 @@ def handle_command(text: str, chat_id: str, market_map: dict):
             old_sh = int(ex_data[0]["shares"])
             old_bp = float(ex_data[0]["buy_price"])
             total_sh = old_sh + new_sh
-            avg_bp = round(((old_sh * old_bp) + (new_sh * new_bp)) / total_sh, 2)
+            avg_bp = round(((old_sh * old_bp) + (new_sh * new_bp)) / total_sh, 4)
         else:
             total_sh, avg_bp = new_sh, new_bp
 
         m = market_map.get(sym, {})
         atr = m.get("atr", avg_bp * 0.025)
-        sl = round(max(0.01, avg_bp - 2.0 * atr), 2)
+        sl = round(max(0.01, avg_bp - 2.0 * atr), 4)
         r_sh = max(0.01, avg_bp - sl)
-        tp1 = round(avg_bp + 1.618 * r_sh, 2)
-        tp2 = round(avg_bp + 2.618 * r_sh, 2)
+        tp1 = round(avg_bp + 1.618 * r_sh, 4)
+        tp2 = round(avg_bp + 2.618 * r_sh, 4)
 
         ok_up, _ = sb_request(
             "POST", "portfolio?on_conflict=symbol",
@@ -415,7 +415,7 @@ def handle_command(text: str, chat_id: str, market_map: dict):
 
         sb_request("POST", "closed_trades", payload=[{
             "symbol": sym, "shares": sh, "buy_price": bp, "sell_price": sell_p,
-            "net_pnl": round(net_pnl, 2), "pnl_pct": round(pnl_pct, 2),
+            "net_pnl": round(net_pnl, 4), "pnl_pct": round(pnl_pct, 4),
             "closed_at": get_cairo_now().isoformat()
         }])
         sb_request("DELETE", f"portfolio?symbol=eq.{sym}")
@@ -435,7 +435,7 @@ def handle_command(text: str, chat_id: str, market_map: dict):
             send_tg(f"⚠️ السهم <b>{sym}</b> غير موجود في محفظتك.", chat_id)
             return
         bp = float(ex_data[0]["buy_price"])
-        be_sl = round(bp * (1.0 + FEE_RATE * 2.0), 2)
+        be_sl = round(bp * (1.0 + FEE_RATE * 2.0), 4)
         sb_request("PATCH", f"portfolio?symbol=eq.{sym}", payload={"stop_loss": be_sl, "trailing_stage": 1})
         send_tg(f"🛡️ <b>تم تأمين {sym} للتعادل!</b>\nوقف الخسارة الجديد: <b>{be_sl} ج.م</b>", chat_id)
         return
@@ -572,17 +572,17 @@ def run_auto_monitor(market_map: dict):
             cp = m["close"]
             atr = m["atr"]
             if sl <= 0:
-                sl = round(max(0.01, bp - 2.0 * atr), 2)
+                sl = round(max(0.01, bp - 2.0 * atr), 4)
             r_u = max(0.01, bp - sl)
             if tp1 <= 0:
-                tp1 = round(bp + 1.618 * r_u, 2)
+                tp1 = round(bp + 1.618 * r_u, 4)
             if tp2 <= 0:
-                tp2 = round(bp + 2.618 * r_u, 2)
+                tp2 = round(bp + 2.618 * r_u, 4)
 
             # الوقف المتحرك الآلي
             updated = False
             if tr_on:
-                be_p = round(bp * (1.0 + FEE_RATE * 2.0), 2)
+                be_p = round(bp * (1.0 + FEE_RATE * 2.0), 4)
                 if cp >= tp1 and tr_stage < 1 and be_p < cp:
                     sl = max(sl, be_p)
                     tr_stage = 1
@@ -590,7 +590,7 @@ def run_auto_monitor(market_map: dict):
                     send_once(f"{today_str}_{sym}_TRAIL1", f"🛡️ <b>تأمين آلي ({sym}):</b> تحقق TP1 وتم رفع الوقف للتعادل (<b>{sl} ج.م</b>).")
                 if cp >= tp2:
                     anchor = max(m["vwap"], m["ema20"])
-                    cand = round(min(cp - 0.5 * atr, anchor * 0.992), 2)
+                    cand = round(min(cp - 0.5 * atr, anchor * 0.992), 4)
                     if cand > sl * 1.003 and cand < cp:
                         sl = cand
                         tr_stage = 2
