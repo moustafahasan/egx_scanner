@@ -1236,6 +1236,39 @@ def run_simple_backtest(df, capital=100000.0, risk_pct=1.5, fee_rate=0.0016):
     }
     return {"trades": trades, "equity": equity, "metrics": metrics}
 
+def estimate_time_horizon(atr: float, close: float, rvol: float = 1.0, score: int = 50) -> str:
+    """تقدير أفق زمني (أيام تداول) حسب ATR% وRVOL والسكور — V11.3."""
+    if close <= 0 or atr <= 0:
+        return "— (لا توجد بيانات ATR)"
+    atr_pct = (atr / close) * 100.0
+    # base days for TP1
+    if atr_pct >= 4.0:
+        base_lo, base_hi = 2, 4
+    elif atr_pct >= 2.5:
+        base_lo, base_hi = 3, 6
+    elif atr_pct >= 1.5:
+        base_lo, base_hi = 5, 10
+    else:
+        base_lo, base_hi = 7, 14
+    # adjust for RVOL (high volume -> faster)
+    if rvol >= 2.0:
+        base_lo = max(1, int(base_lo * 0.7))
+        base_hi = max(2, int(base_hi * 0.7))
+    elif rvol >= 1.3:
+        base_lo = max(1, int(base_lo * 0.85))
+        base_hi = max(2, int(base_hi * 0.85))
+    # adjust for score (high score -> faster)
+    if score >= 75:
+        base_lo = max(1, int(base_lo * 0.8))
+        base_hi = max(2, int(base_hi * 0.8))
+    tp1_lo, tp1_hi = base_lo, base_hi
+    tp2_lo, tp2_hi = int(base_lo * 1.6), int(base_hi * 1.6)
+    tp3_lo, tp3_hi = int(base_lo * 2.5), int(base_hi * 2.5)
+    tp2_lo = max(tp2_lo, tp1_hi + 1)
+    tp3_lo = max(tp3_lo, tp2_hi + 1)
+    return f"TP1: {tp1_lo}-{tp1_hi} أيام | TP2: {tp2_lo}-{tp2_hi} يوم | TP3: {tp3_lo}-{tp3_hi} يوم (ATR {atr_pct:.2f}%)"
+
+
 def score_stock_from_tv(q: dict, market_median_perf1m: float, capital: float, risk_pct: float, fee_rate: float, session_progress: float) -> dict:
     sym = q["symbol"]
     close = q["close"]
@@ -1338,7 +1371,7 @@ def score_stock_from_tv(q: dict, market_median_perf1m: float, capital: float, ri
         "intraday_flow": flow_res,
         "tv_raw": q,
         "TradingView": f"https://www.tradingview.com/chart/?symbol=EGX:{sym}",
-        "الأفق الزمني": "TP1: 3-7 أيام | TP2: 7-14 يوم | TP3: 14-30 يوم (تقديري، ATR يومي)"
+        "الأفق الزمني": estimate_time_horizon(atr14, close, pace_rvol, score)
     }
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -2020,7 +2053,7 @@ for known_sym in set(list(EGX_ARABIC_NAMES.keys()) + portfolio_clean_syms):
             "intraday_flow": analyze_intraday_flow({}, fallback_close=c_val, session_progress=session_info["progress"]),
             "tv_raw": {},
             "TradingView": f"https://www.tradingview.com/chart/?symbol=EGX:{known_sym}",
-            "الأفق الزمني": "— (لا توجد بيانات ATR)"
+            "الأفق الزمني": estimate_time_horizon(atr_val, c_val, 1.0, 0)
         }
 
 scanner_results.sort(key=lambda x: (x["السكور"], x["intraday_flow"]["flow_score"], x["الفوليوم"]), reverse=True)
