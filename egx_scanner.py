@@ -474,6 +474,22 @@ EGX_ARABIC_NAMES = {
 
 LEADERS_EGX_SYMBOLS = set(list(EGX_ARABIC_NAMES.keys())[:45])
 
+# ===== معادن و بترول (Commodities) — V11.3 =====
+COMMODITIES = {
+    "GOLD":   ("ذهب (Gold)", "GC=F"),
+    "SILVER": ("فضة (Silver)", "SI=F"),
+    "OIL":    ("نفط خام (WTI)", "CL=F"),
+    "BRENT":  ("نفط برنت (Brent)", "BZ=F"),
+    "NATGAS": ("غاز طبيعي (Natural Gas)", "NG=F"),
+    "COPPER": ("نحاس (Copper)", "HG=F"),
+    "PLATINUM": ("بلاتين (Platinum)", "PL=F"),
+}
+
+# إضافة أسماء المعادن إلى قاموس الأسماء (للـ thndr_parser)
+for _cs, (_cn, _) in COMMODITIES.items():
+    EGX_ARABIC_NAMES[_cs] = _cn
+
+
 def get_friendly_stock_name(sym: str, fallback_desc: str = "") -> str:
     clean = sym.upper().replace(".CA", "").strip()
     if clean in EGX_ARABIC_NAMES:
@@ -1269,6 +1285,96 @@ def estimate_time_horizon(atr: float, close: float, rvol: float = 1.0, score: in
     return f"TP1: {tp1_lo}-{tp1_hi} أيام | TP2: {tp2_lo}-{tp2_hi} يوم | TP3: {tp3_lo}-{tp3_hi} يوم (ATR {atr_pct:.2f}%)"
 
 
+def fetch_commodities() -> dict:
+    """سحب بيانات المعادن والبترول من Yahoo Finance (V11.3). يُعيد dict متوافق مع tv_map."""
+    out = {}
+    for sym, (name, ticker) in COMMODITIES.items():
+        try:
+            df = yf.download(ticker, period="1y", interval="1d", progress=False, auto_adjust=True)
+            if df is None or df.empty or len(df) < 30:
+                continue
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            df = df.dropna(subset=["Close", "High", "Low", "Open", "Volume"])
+            if df.empty or len(df) < 30:
+                continue
+            close = float(df["Close"].iloc[-1])
+            prev_close = float(df["Close"].iloc[-2]) if len(df) >= 2 else close
+            change = ((close - prev_close) / prev_close * 100.0) if prev_close > 0 else 0.0
+            vol = float(df["Volume"].iloc[-1])
+            vol_sma = float(df["Volume"].tail(10).mean()) if len(df) >= 10 else vol
+            avg_vol10 = float(df["Volume"].tail(10).mean()) if len(df) >= 10 else vol
+            avg_vol30 = float(df["Volume"].tail(30).mean()) if len(df) >= 30 else vol
+            high = float(df["High"].iloc[-1])
+            low = float(df["Low"].iloc[-1])
+            open_p = float(df["Open"].iloc[-1])
+            # ATR(14)
+            tr = pd.concat([
+                df["High"] - df["Low"],
+                (df["High"] - df["Close"].shift(1)).abs(),
+                (df["Low"] - df["Close"].shift(1)).abs(),
+            ], axis=1).max(axis=1)
+            atr = float(tr.tail(14).mean()) if len(tr) >= 14 else (close * 0.02)
+            # EMA
+            ema20 = float(df["Close"].ewm(span=20, adjust=False).mean().iloc[-1])
+            ema50 = float(df["Close"].ewm(span=50, adjust=False).mean().iloc[-1])
+            ema200 = float(df["Close"].ewm(span=200, adjust=False).mean().iloc[-1]) if len(df) >= 200 else ema50
+            # RSI(14) daily
+            delta = df["Close"].diff()
+            gain = delta.where(delta > 0, 0.0).rolling(14).mean()
+            loss = (-delta.where(delta < 0, 0.0)).rolling(14).mean()
+            rs = gain / loss.replace(0, np.nan)
+            rsi = float(100 - (100 / (1 + rs)).iloc[-1]) if pd.notna(rs.iloc[-1]) else 50.0
+            # Perf 1M
+            if len(df) >= 22:
+                perf_1m = (close / float(df["Close"].iloc[-22]) - 1.0) * 100.0
+            else:
+                perf_1m = change
+            # VWAP (daily approx = close, but use typical price * volume weighted last 20)
+            try:
+                tp = (df["High"] + df["Low"] + df["Close"]) / 3.0
+                vwap = float((tp * df["Volume"]).tail(20).sum() / df["Volume"].tail(20).sum()) if df["Volume"].tail(20).sum() > 0 else close
+            except Exception:
+                vwap = close
+            turnover = close * vol
+            expected_vol = avg_vol10 * 1.0
+            rvol = (vol / expected_vol) if expected_vol > 0 else 1.0
+            out[sym] = {
+                "symbol": sym,
+                "name": name,
+                "close": close,
+                "change": round(change, 4),
+                "volume": vol,
+                "turnover": turnover,
+                "avg_vol10": avg_vol10,
+                "avg_vol30": avg_vol30,
+                "atr": atr,
+                "ema20": ema20,
+                "ema50": ema50,
+                "ema200": ema200,
+                "rsi": rsi,
+                "macd": 0.0,
+                "macds": 0.0,
+                "vwap": vwap,
+                "rsi15": rsi,
+                "macd15": 0.0,
+                "macds15": 0.0,
+                "bid": 0.0,
+                "ask": 0.0,
+                "bid_size": 0.0,
+                "ask_size": 0.0,
+                "high": high,
+                "low": low,
+                "open": open_p,
+                "perf_1m": perf_1m,
+                "_is_commodity": True,
+            }
+        except Exception as e:
+            print(f"[Commodity Fetch Error] {sym}: {e}")
+            continue
+    return out
+
+
 def score_stock_from_tv(q: dict, market_median_perf1m: float, capital: float, risk_pct: float, fee_rate: float, session_progress: float) -> dict:
     sym = q["symbol"]
     close = q["close"]
@@ -1370,7 +1476,8 @@ def score_stock_from_tv(q: dict, market_median_perf1m: float, capital: float, ri
         },
         "intraday_flow": flow_res,
         "tv_raw": q,
-        "TradingView": f"https://www.tradingview.com/chart/?symbol=EGX:{sym}",
+        "TradingView": (f"https://www.tradingview.com/chart/?symbol=COMEX:{sym}" if q.get("_is_commodity") else f"https://www.tradingview.com/chart/?symbol=EGX:{sym}"),
+        "is_commodity": bool(q.get("_is_commodity", False)),
         "الأفق الزمني": estimate_time_horizon(atr14, close, pace_rvol, score)
     }
 
@@ -1953,6 +2060,14 @@ refresh_nonce = st.session_state.get("refresh_nonce", 0)
 with st.spinner("🚀 جاري مسح أسهم البورصة المصرية وتحديث السيولة اللحظية..."):
     raw_egx_tv_map, last_live_sync = fetch_full_egx_tv_scanner(refresh_nonce)
 
+# دمج المعادن والبترول
+try:
+    _comm = fetch_commodities()
+    for _cs, _cq in _comm.items():
+        raw_egx_tv_map[_cs] = _cq
+except Exception as _ce:
+    print(f"[Commodities Error]: {_ce}")
+
 # قراءة الإعدادات من Session State أو Secrets
 capital = int(st.session_state.get("cfg_capital", 100000))
 risk_pct = float(st.session_state.get("cfg_risk_pct", 1.5))
@@ -2024,7 +2139,7 @@ scanner_results = []
 for sym, q_data in raw_egx_tv_map.items():
     analyzed = score_stock_from_tv(q_data, market_median_perf1m, capital, risk_pct, fee_rate, session_info["progress"])
     all_analyzed_map[sym] = analyzed
-    if only_leaders and sym not in LEADERS_EGX_SYMBOLS:
+    if only_leaders and sym not in LEADERS_EGX_SYMBOLS and sym not in COMMODITIES:
         continue
     if analyzed["السيولة (مليون)"] >= min_turnover_m and analyzed["التغير %"] < 19.5:
         scanner_results.append(analyzed)
