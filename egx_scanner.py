@@ -1481,24 +1481,75 @@ def score_stock_from_tv(q: dict, market_median_perf1m: float, capital: float, ri
         "الأفق الزمني": estimate_time_horizon(atr14, close, pace_rvol, score)
     }
 
-@st.cache_data(ttl=1800, show_spinner=False)
-def fetch_single_stock_history(ticker: str) -> pd.DataFrame:
+def fetch_twelve_data_history(symbol: str, api_key: str, outputsize: int = 400) -> pd.DataFrame:
+    """Fallback historical data from Twelve Data (free API key). V11.3."""
+    if not api_key:
+        return pd.DataFrame()
+    # Strip .CA suffix and map to TD symbol
+    sym = symbol.upper().replace(".CA", "").strip()
+    url = "https://api.twelvedata.com/time_series?symbol=%s&exchange=EGX&interval=1day&outputsize=%d&apikey=%s" % (sym, outputsize, api_key)
     try:
-        df = yf.download(ticker, period="2y", interval="1d", progress=False, auto_adjust=True)
-        if df is None or df.empty:
+        import urllib.request, json
+        with urllib.request.urlopen(url, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        if data.get("status") == "error" or "values" not in data:
             return pd.DataFrame()
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-        df = df.dropna(subset=["Close", "High", "Low", "Open", "Volume"])
-        if df.empty:
+        rows = []
+        for v in data["values"]:
+            rows.append({
+                "Date": v["datetime"],
+                "Open": float(v["open"]),
+                "High": float(v["high"]),
+                "Low": float(v["low"]),
+                "Close": float(v["close"]),
+                "Volume": float(v.get("volume", 0) or 0),
+            })
+        if not rows:
             return pd.DataFrame()
+        df = pd.DataFrame(rows)
+        df["Date"] = pd.to_datetime(df["Date"])
+        df = df.set_index("Date").sort_index()
         df["EMA20"] = df["Close"].ewm(span=20, adjust=False).mean()
         df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
         df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
         df["VolSMA20"] = df["Volume"].rolling(20).mean()
-        return df
-    except Exception:
+        # ATR
+        tr = pd.concat([df["High"]-df["Low"], (df["High"]-df["Close"].shift(1)).abs(), (df["Low"]-df["Close"].shift(1)).abs()], axis=1).max(axis=1)
+        df["ATR"] = tr.rolling(14).mean()
+        df["ATR14"] = df["ATR"]
+        return df.dropna(subset=["Close", "High", "Low", "Open"])
+    except Exception as e:
+        print(f"[TwelveData Error] {symbol}: {e}")
         return pd.DataFrame()
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_single_stock_history(ticker: str) -> pd.DataFrame:
+    # 1) Try Yahoo Finance first
+    try:
+        df = yf.download(ticker, period="2y", interval="1d", progress=False, auto_adjust=True)
+        if df is not None and not df.empty:
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            df = df.dropna(subset=["Close", "High", "Low", "Open", "Volume"])
+            if not df.empty:
+                df["EMA20"] = df["Close"].ewm(span=20, adjust=False).mean()
+                df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
+                df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
+                df["VolSMA20"] = df["Volume"].rolling(20).mean()
+                tr = pd.concat([df["High"]-df["Low"], (df["High"]-df["Close"].shift(1)).abs(), (df["Low"]-df["Close"].shift(1)).abs()], axis=1).max(axis=1)
+                df["ATR"] = tr.rolling(14).mean()
+                df["ATR14"] = df["ATR"]
+                return df
+    except Exception:
+        pass
+    # 2) Fallback: Twelve Data (if API key set)
+    td_key = st.session_state.get("twelve_data_key") or get_secret_safe("TWELVE_DATA_API_KEY")
+    if td_key:
+        df = fetch_twelve_data_history(ticker, td_key)
+        if not df.empty:
+            return df
+    return pd.DataFrame()
 
 # ==========================================
 # محركات التحليل المؤسسي العشرة
@@ -3386,6 +3437,7 @@ alter table tg_alerts_log disable row level security;
         st.session_state["theme_mode"] = st.radio("theme:", ["light (nahari)", "dark (dakan)"], index=(0 if st.session_state.get("theme_mode","light")=="light" else 1), horizontal=True)
         st.session_state["theme_mode"] = "light" if "light" in st.session_state["theme_mode"] else "dark"
         st.session_state["profile_name"] = st.text_input("👤 اسم الملف (Profile):", value=st.session_state.get("profile_name", ""), placeholder="مثال: علي")
+        st.session_state["twelve_data_key"] = st.text_input("🔑 Twelve Data API Key (optional, free):", value=st.session_state.get("twelve_data_key", get_secret_safe("TWELVE_DATA_API_KEY")), type="password")
         st.session_state["cfg_capital"] = st.number_input("💰 رأس المال للمقترحات (ج.م):", min_value=5000, value=capital, step=5000)
         st.session_state["cfg_risk_pct"] = st.slider("🛡️ نسبة المخاطرة في الصفقة الواحدة (%):", 0.5, 5.0, risk_pct, 0.25)
         st.session_state["cfg_min_turnover"] = st.number_input("💧 الحد الأدنى للسيولة اليومية (مليون ج.م):", 0.0, 100.0, min_turnover_m, 0.25)
