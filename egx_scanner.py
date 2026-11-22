@@ -1501,6 +1501,37 @@ def fetch_single_stock_history(ticker: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def extract_zigzag_pivots(df: pd.DataFrame, pct_thresh: float = 0.05) -> list:
+    if df is None or len(df) < 5:
+        return []
+    highs, lows, dates = df["High"].values, df["Low"].values, df.index
+    pivots, trend, last_p, last_idx = [], 0, float(highs[0]), 0
+
+    for i in range(1, len(df)):
+        h, l = float(highs[i]), float(lows[i])
+        if trend == 0:
+            if h >= last_p * (1 + pct_thresh):
+                pivots.append({"idx": last_idx, "date": dates[last_idx], "price": float(lows[last_idx]), "type": "L"})
+                trend, last_p, last_idx = 1, h, i
+            elif l <= last_p * (1 - pct_thresh):
+                pivots.append({"idx": last_idx, "date": dates[last_idx], "price": float(highs[last_idx]), "type": "H"})
+                trend, last_p, last_idx = -1, l, i
+        elif trend == 1:
+            if h >= last_p:
+                last_p, last_idx = h, i
+            elif l <= last_p * (1 - pct_thresh):
+                pivots.append({"idx": last_idx, "date": dates[last_idx], "price": last_p, "type": "H"})
+                trend, last_p, last_idx = -1, l, i
+        elif trend == -1:
+            if l <= last_p:
+                last_p, last_idx = l, i
+            elif h >= last_p * (1 + pct_thresh):
+                pivots.append({"idx": last_idx, "date": dates[last_idx], "price": last_p, "type": "L"})
+                trend, last_p, last_idx = 1, h, i
+
+    pivots.append({"idx": last_idx, "date": dates[last_idx], "price": last_p, "type": "H" if trend >= 0 else "L"})
+    return pivots
+
 def analyze_smc_ict(df: pd.DataFrame) -> dict:
     sub = df.tail(120).copy()
     curr_p = float(sub["Close"].iloc[-1])
@@ -2818,7 +2849,7 @@ with tab_lab:
         </div>
         """, unsafe_allow_html=True)
 
-        t_flow, t_smc, t_wyk, t_cpr, t_harm, t_ew, t_tech, t_fund, t_gann, t_news, t_bt = st.tabs([
+        t_flow, t_smc, t_wyk, t_cpr, t_harm, t_ew, t_tech, t_fund, t_gann, t_news, t_bt, t_upload = st.tabs([
             "⚡ التدفق اللحظي وعمق السيولة",
             "🏦 الأموال الذكية و ICT",
             "🐋 وايكوف و PVSRA",
@@ -2829,7 +2860,8 @@ with tab_lab:
             "📊 التحليل المالي F-Score",
             "🪐 التحليل الزمني وجان",
             "📰 الرادار الخبري",
-            "🧪 Backtest"
+            "🧪 Backtest",
+            "📥 رفع بيانات تاريخية (CSV/Excel)"
         ])
 
         # 1) التدفق اللحظي وعمق السيولة الأوتوماتيكي 100%
@@ -3248,6 +3280,100 @@ with tab_lab:
                         _fig_eq.update_layout(title="Equity Curve", height=320, template=TPL, paper_bgcolor="#FFFFFF", plot_bgcolor="#F8FAFC", margin=dict(l=10,r=10,t=40,b=10))
                         st.plotly_chart(_fig_eq, use_container_width=True)
                     st.dataframe(pd.DataFrame(res["trades"]), use_container_width=True, hide_index=True)
+
+
+        # 12) Manual Historical Data Upload (V11.3)
+        with t_upload:
+            st.markdown("#### 📥 رفع بيانات تاريخية (CSV/Excel) — حل لأسهم EGX بدون Yahoo")
+            st.info("💡 **كيفية الحصول على البيانات:** Mubasher/EGX → تصدير CSV/Excel (OHLCV) → رفع هنا. أو Yahoo Finance → download CSV.")
+            up_file = st.file_uploader("📎 ارفع ملف CSV/Excel (أعمدة: Date, Open, High, Low, Close, Volume):", type=["csv", "xlsx", "xls"], key="hist_upload")
+            if up_file is not None:
+                try:
+                    if up_file.name.lower().endswith(".csv"):
+                        _df_up = pd.read_csv(up_file)
+                    else:
+                        _df_up = pd.read_excel(up_file)
+                    # Normalize column names
+                    _df_up.columns = [str(c).strip().lower() for c in _df_up.columns]
+                    col_map = {}
+                    for c in _df_up.columns:
+                        if c in ["date", "datetime", "time", "day"]:
+                            col_map[c] = "Date"
+                        elif c in ["open", "o"]:
+                            col_map[c] = "Open"
+                        elif c in ["high", "h"]:
+                            col_map[c] = "High"
+                        elif c in ["low", "l"]:
+                            col_map[c] = "Low"
+                        elif c in ["close", "c", "adj close", "adjusted close"]:
+                            col_map[c] = "Close"
+                        elif c in ["volume", "vol", "v"]:
+                            col_map[c] = "Volume"
+                    _df_up = _df_up.rename(columns=col_map)
+                    if "Date" in _df_up.columns:
+                        _df_up["Date"] = pd.to_datetime(_df_up["Date"], errors="coerce")
+                        _df_up = _df_up.dropna(subset=["Date"]).set_index("Date").sort_index()
+                    for c in ["Open", "High", "Low", "Close", "Volume"]:
+                        if c in _df_up.columns:
+                            _df_up[c] = pd.to_numeric(_df_up[c], errors="coerce")
+                    _df_up = _df_up.dropna(subset=["Close", "High", "Low", "Open"])
+                    if "Volume" not in _df_up.columns:
+                        _df_up["Volume"] = 1.0
+                    if len(_df_up) < 10:
+                        st.warning("⚠️ بيانات غير كافية (أقل من 10 صفوف).")
+                    else:
+                        # Compute indicators
+                        _df_up["EMA20"] = _df_up["Close"].ewm(span=20, adjust=False).mean()
+                        _df_up["EMA50"] = _df_up["Close"].ewm(span=50, adjust=False).mean()
+                        _df_up["EMA200"] = _df_up["Close"].ewm(span=200, adjust=False).mean() if len(_df_up) >= 200 else _df_up["Close"].ewm(span=50, adjust=False).mean()
+                        _df_up["VolSMA20"] = _df_up["Volume"].rolling(20).mean()
+                        tr = pd.concat([_df_up["High"]-_df_up["Low"], (_df_up["High"]-_df_up["Close"].shift(1)).abs(), (_df_up["Low"]-_df_up["Close"].shift(1)).abs()], axis=1).max(axis=1)
+                        _df_up["ATR"] = tr.rolling(14).mean()
+                        _df_up["ATR14"] = _df_up["ATR"]
+                        st.success("✅ تم تحميل %d صف (من %s إلى %s)" % (len(_df_up), str(_df_up.index[0])[:10], str(_df_up.index[-1])[:10]))
+                        # Show SMC
+                        try:
+                            smc = analyze_smc_ict(_df_up)
+                            st.markdown("##### 🏦 SMC/ICT")
+                            st.markdown(f"**الهيكل:** {smc['structure']}")
+                            if smc["obs"]:
+                                st.dataframe(pd.DataFrame(smc["obs"]), use_container_width=True, hide_index=True)
+                            if smc["fvgs"]:
+                                st.dataframe(pd.DataFrame(smc["fvgs"]), use_container_width=True, hide_index=True)
+                            if smc["sweeps"]:
+                                for sw in smc["sweeps"]:
+                                    st.info(sw)
+                        except Exception as e:
+                            st.warning("SMC error: %s" % e)
+                        # Show Wyckoff
+                        try:
+                            wyk = analyze_wyckoff_vsa(_df_up)
+                            st.markdown("##### 🐋 Wyckoff/PVSRA")
+                            st.markdown(f"**المرحلة:** {wyk['phase']}")
+                            for n in wyk["vsa_notes"]:
+                                st.info(n)
+                        except Exception as e:
+                            st.warning("Wyckoff error: %s" % e)
+                        # Show CPR
+                        try:
+                            cvp = analyze_cpr_and_vp(_df_up)
+                            st.markdown("##### 🎯 CPR/VP")
+                            st.markdown(f"**Verdict:** {cvp['verdict']}")
+                            st.markdown(f"POC: {cvp['poc']} | VAH: {cvp['vah']} | VAL: {cvp['val']}")
+                        except Exception as e:
+                            st.warning("CPR error: %s" % e)
+                        # Show chart
+                        try:
+                            sub = _df_up.tail(120)
+                            import plotly.graph_objects as _go
+                            fig = _go.Figure(_go.Candlestick(x=sub.index, open=sub["Open"], high=sub["High"], low=sub["Low"], close=sub["Close"], name="السعر"))
+                            fig.update_layout(title="Chart (uploaded data)", height=400, template=TPL, paper_bgcolor="#FFFFFF", plot_bgcolor="#F8FAFC", xaxis_rangeslider_visible=False, margin=dict(l=10,r=10,t=40,b=10))
+                            st.plotly_chart(fig, use_container_width=True)
+                        except Exception as e:
+                            st.warning("Chart error: %s" % e)
+                except Exception as e:
+                    st.error("⚠️ خطأ في قراءة الملف: %s" % e)
+
 
 # ==============================================================================
 # التبويب 4: الإعدادات والربط السحابي والتليجرام
