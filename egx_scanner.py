@@ -17,10 +17,10 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 # ==========================================
-# إعدادات الصفحة والتصميم البصري الداكن (V11.3)
+# إعدادات الصفحة والتصميم البصري الداكن (V11.4)
 # ==========================================
 st.set_page_config(
-    page_title="EGX Whale Hunter Pro V11.3",
+    page_title="EGX Whale Hunter Pro V11.4",
     page_icon="🦅",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -178,7 +178,7 @@ else:
             font-family: 'Cairo', sans-serif !important;
         }
 
-        /* ===== V11.3 Light Theme ===== */
+        /* ===== V11.4 Light Theme ===== */
         .stApp, [data-testid="stAppViewContainer"], [data-testid="stHeader"], [data-testid="stToolbar"] {
             background-color: #F1F5F9 !important;
             color: #0F172A !important;
@@ -502,7 +502,7 @@ def get_sector(sym):
     return SECTOR_MAP.get(sym.upper().replace(".CA", "").strip(), "أخرى")
 
 
-# ===== معادن و بترول (Commodities) — V11.3 =====
+# ===== معادن و بترول (Commodities) — V11.4 =====
 COMMODITIES = {
     "GOLD":   ("ذهب (Gold)", "GC=F"),
     "SILVER": ("فضة (Silver)", "SI=F"),
@@ -1157,7 +1157,7 @@ def analyze_intraday_flow(q: dict, fallback_close: float = 0.0, session_progress
 
 def evaluate_smart_stop_loss(sym: str, curr_p: float, sl: float, buy_p: float, flow_res: dict, alert_buffer_pct: float = 2.5) -> dict:
     """
-    محرك الوقف الذكي الهجين (V11.3):
+    محرك الوقف الذكي الهجين (V11.4):
     - كسر عميق >= 1.5% أسفل الوقف -> خروج فوري.
     - سيولة بيعية مؤسسية: RVOL >= 1.6x و (VWAP diff <= -0.8% أو flow_score <= -35).
     - انهيار زخم: RSI15 <= 35 + CLV <= 15% + RVOL >= 1.2x.
@@ -1281,7 +1281,7 @@ def run_simple_backtest(df, capital=100000.0, risk_pct=1.5, fee_rate=0.0016):
     return {"trades": trades, "equity": equity, "metrics": metrics}
 
 def estimate_time_horizon(atr: float, close: float, rvol: float = 1.0, score: int = 50) -> str:
-    """تقدير أفق زمني (أيام تداول) حسب ATR% وRVOL والسكور — V11.3."""
+    """تقدير أفق زمني (أيام تداول) حسب ATR% وRVOL والسكور — V11.4."""
     if close <= 0 or atr <= 0:
         return "— (لا توجد بيانات ATR)"
     atr_pct = (atr / close) * 100.0
@@ -1314,7 +1314,7 @@ def estimate_time_horizon(atr: float, close: float, rvol: float = 1.0, score: in
 
 
 def fetch_commodities() -> dict:
-    """سحب بيانات المعادن والبترول من Yahoo Finance (V11.3). يُعيد dict متوافق مع tv_map."""
+    """سحب بيانات المعادن والبترول من Yahoo Finance (V11.4). يُعيد dict متوافق مع tv_map."""
     out = {}
     for sym, (name, ticker) in COMMODITIES.items():
         try:
@@ -1987,7 +1987,7 @@ def fetch_fundamental_analysis(ticker: str) -> dict:
             tests += 1; ok = (rev0 / ta0) > (rev1 / ta1); f_score += int(ok)
             breakdown.append(("8. كفاءة دوران الأصول", f"{rev0/ta0:.2f}x", ok))
 
-        # تقويم الأرباح والكوبونات (V11.3)
+        # تقويم الأرباح والكوبونات (V11.4)
         cal_info = {}
         try:
             cal = t.calendar
@@ -2095,7 +2095,7 @@ my_portfolio, cloud_connected = load_portfolio(force_cloud_refresh=force_sync)
 closed_trades = load_closed_trades(force_refresh=force_sync)
 portfolio_clean_syms = [x["symbol"].upper().replace(".CA", "").strip() for x in my_portfolio if x.get("symbol")]
 
-# ===== Watchlist (V11.3) =====
+# ===== Watchlist (V11.4) =====
 LOCAL_WATCH_FILE = "watchlist_cache.json"
 def _load_watchlist():
     try:
@@ -2152,7 +2152,7 @@ sb_badge = "☁️ سحابة Supabase متصلة" if cloud_connected else "💾
 st.markdown(f"""
 <div class="hero-banner">
     <div>
-        <div class="hero-title">🦅 <span class="hero-accent">EGX WHALE HUNTER</span> PRO <span style="font-size:13px;color:#FACC15;">V11.3</span></div>
+        <div class="hero-title">🦅 <span class="hero-accent">EGX WHALE HUNTER</span> PRO <span style="font-size:13px;color:#FACC15;">V11.4</span></div>
         <div class="hero-sub">🌐 تغطية ({len(raw_egx_tv_map)} سهم) • {sb_badge} • 💼 محفظتي ({len(portfolio_clean_syms)}) • {tg_badge} • آخر تحديث: {last_live_sync}</div>
     </div>
     <div class="session-pill">{session_info['badge']}</div>
@@ -2523,7 +2523,7 @@ with tab_portfolio:
     pk3.markdown(f'<div class="kpi-card"><div class="kpi-label">📈 صافي الربح/الخسارة</div><div class="kpi-val {"txt-green" if total_net_pnl>=0 else "txt-red"}">{total_net_pnl:+,.0f} ({total_pnl_pct:+.1f}%)</div></div>', unsafe_allow_html=True)
     pk4.markdown(f'<div class="kpi-card" style="border-top-color:#FACC15;"><div class="kpi-label">🛡️ المخاطرة المفتوحة</div><div class="kpi-val txt-gold">{total_open_risk:,.0f} ({open_risk_pct:.1f}%)</div></div>', unsafe_allow_html=True)
     st.write("")
-    # ===== خريطة حرارة المحفظة (Treemap) V11.3 =====
+    # ===== خريطة حرارة المحفظة (Treemap) V11.4 =====
     if portfolio_rows:
         try:
             import plotly.express as _px
@@ -2785,7 +2785,7 @@ with tab_portfolio:
             tk3.markdown(f'<div class="kpi-card"><div class="kpi-label">⚖️ معامل الربح</div><div class="kpi-val txt-gold">{pf:.2f}x</div></div>', unsafe_allow_html=True)
             tk4.markdown(f'<div class="kpi-card"><div class="kpi-label">💰 صافي الأرباح المحققة</div><div class="kpi-val {"txt-green" if tot_realized>=0 else "txt-red"}">{tot_realized:+,.0f} ج.م</div></div>', unsafe_allow_html=True)
             st.write("")
-            # ===== Risk Analytics (V11.3) =====
+            # ===== Risk Analytics (V11.4) =====
             try:
                 _sorted = sorted(closed_trades, key=lambda t: str(t.get("closed_at", "")))
                 _cum = 0.0
@@ -3283,7 +3283,7 @@ with tab_lab:
                         dff = pd.DataFrame(fund["breakdown"], columns=["المعيار", "القيمة", "النتيجة"])
                         dff["النتيجة"] = dff["النتيجة"].map({True: "✅ ناجح (+1)", False: "❌ لم يتحقق"})
                         st.dataframe(dff, use_container_width=True, hide_index=True)
-                    # تقويم الأرباح والكوبونات (V11.3)
+                    # تقويم الأرباح والكوبونات (V11.4)
                     st.markdown("##### 📅 تقويم الأرباح والكوبونات")
                     cal_rows = []
                     if fund.get("ex_dividend"):
@@ -3349,7 +3349,7 @@ with tab_lab:
                     </div>
                     """, unsafe_allow_html=True)
 
-        # 11) Backtest (V11.3)
+        # 11) Backtest (V11.4)
         with t_bt:
             st.markdown("#### 🧪 Backtest بسيط — استراتيجية close>EMA20>EMA50 + RVOL")
             btc1, btc2, btc3 = st.columns(3)
@@ -3384,7 +3384,7 @@ with tab_lab:
                     st.dataframe(pd.DataFrame(res["trades"]), use_container_width=True, hide_index=True)
 
 
-        # 12) Manual Historical Data Upload (V11.3)
+        # 12) Manual Historical Data Upload (V11.4)
         with t_upload:
             st.markdown("#### 📥 رفع بيانات تاريخية (CSV/Excel) — حل لأسهم EGX بدون Yahoo")
             st.info("💡 **كيفية الحصول على البيانات:** Mubasher/EGX → تصدير CSV/Excel (OHLCV) → رفع هنا. أو Yahoo Finance → download CSV.")
@@ -3526,7 +3526,7 @@ with tab_settings:
                 sb_logout()
                 st.rerun()
         st.markdown("---")
-        st.caption("استعادة بيانات ما قبل V11.3 (user_id is null):")
+        st.caption("استعادة بيانات ما قبل V11.4 (user_id is null):")
         if st.button("Claim Legacy Data", use_container_width=True):
             uid = st.session_state.get("auth_user_id")
             if uid:
@@ -3610,7 +3610,7 @@ alter table tg_alerts_log disable row level security;
         st.session_state["cfg_tg_port"] = st.checkbox("🔔 إرسال تنبيهات المحفظة تلقائياً", value=tg_auto_port)
         st.session_state["cfg_tg_whales"] = st.checkbox("🐋 تنبيه صفقات الحيتان (سكور 80+)", value=tg_auto_whales)
         if st.button("🧪 إرسال رسالة تجريبية لتليجرام", use_container_width=True):
-            ok_t, msg_t = send_telegram_message(tg_t_in, tg_c_in, "🦅 <b>EGX Whale Hunter Pro V11.3</b>\n✅ النظام السحابي، الألوان الداكنة، وتحليل التدفق الأوتوماتيكي تعمل بنجاح!")
+            ok_t, msg_t = send_telegram_message(tg_t_in, tg_c_in, "🦅 <b>EGX Whale Hunter Pro V11.4</b>\n✅ النظام السحابي، الألوان الداكنة، وتحليل التدفق الأوتوماتيكي تعمل بنجاح!")
             st.success("✅ وصلت الرسالة لتليجرام!") if ok_t else st.error(f"❌ {msg_t}")
 
     with set_c2:
