@@ -1403,6 +1403,55 @@ def fetch_commodities() -> dict:
     return out
 
 
+def fetch_ai_summary_openai(symbol, selected_data, flow, fund, news_items, smc, wyk, cvp, harm, ew, api_key, model="gpt-4o-mini") -> str:
+    """AI Stock Summary via OpenAI. V11.4."""
+    if not api_key:
+        return "⚠️ OpenAI API key not set. أضفه في الإعدادات."
+    news_txt = ""
+    if news_items:
+        for n in news_items[:5]:
+            news_txt += "- %s (%s)\n" % (n.get("title", ""), n.get("sentiment", ""))
+    smc_txt = smc.get("structure", "") if isinstance(smc, dict) else ""
+    wyk_txt = wyk.get("phase", "") if isinstance(wyk, dict) else ""
+    cvp_txt = cvp.get("verdict", "") if isinstance(cvp, dict) else ""
+    harm_txt = harm.get("pattern_name", "") if isinstance(harm, dict) else ""
+    ew_txt = ew.get("wave_name", "") if isinstance(ew, dict) else ""
+    fund_txt = ""
+    if isinstance(fund, dict) and "error" not in fund:
+        fund_txt = "F-Score: %s/%s | P/E: %s | P/B: %s | ROE: %s | Sector: %s" % (fund.get("f_score", 0), fund.get("tests_available", 0), fund.get("pe", "—"), fund.get("pb", "—"), (str(round(fund.get("roe", 0) * 100, 1)) + "%") if fund.get("roe") else "—", fund.get("sector", "—"))
+
+    system_prompt = "أنت محلل أسهم محترف في البورصة المصرية (EGX). لخص السهم في 5-8 أسطر عربية + توصية (🟢 شراء / 🟡 احتفاظ / 🔴 بيع) + 3 مخاطر (Key Risks). كن مختصرًا ومحددًا (أرقام، مستويات، توصيات). لا تكرر البيانات. ركّز على: الاتجاه، الزخم، السيولة، المخاطر."
+    user_prompt = ("السهم: %s (%s)\nالسعر: %s (%s%%)\nالسكور: %s/100 (%s)\n"
+        "التدفق: VWAP %s (%s%%) | RSI15: %s | MACD15: %s | CLV: %s%% | RVOL: %sx\n"
+        "SL: %s | TP1: %s | TP2: %s | الأفق: %s | توفر: %s\n"
+        "SMC: %s | Wyckoff: %s | CPR: %s | Harmonic: %s | Elliott: %s\n"
+        "المالی: %s\n\nالأخبار:\n%s\n\nأجب بالعربية، مختصر، مع توصية واضحة (🟢 شراء / 🟡 احتفاظ / 🔴 بيع) و3 مخاطر.") % (
+        symbol, selected_data.get("اسم الشركة", ""),
+        selected_data.get("الإغلاق", 0), selected_data.get("التغير %", 0),
+        selected_data.get("السكور", 0), selected_data.get("نوع الإشارة", ""),
+        flow.get("vwap", 0), flow.get("vwap_diff_pct", 0), flow.get("rsi15", 0),
+        flow.get("macd15", 0), flow.get("clv_pct", 0), flow.get("rel_vol", 0),
+        selected_data.get("الوقف (2xATR)", 0), selected_data.get("TP1", 0), selected_data.get("TP2", 0),
+        selected_data.get("الأفق الزمني", "—"), selected_data.get("توفر البيانات", "—"),
+        smc_txt, wyk_txt, cvp_txt, harm_txt, ew_txt, fund_txt, news_txt or "لا توجد أخبار.")
+
+    url = "https://api.openai.com/v1/chat/completions"
+    payload = json.dumps({"model": model, "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}], "temperature": 0.3, "max_tokens": 400}).encode("utf-8")
+    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json", "Authorization": "Bearer " + api_key}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        return data["choices"][0]["message"]["content"]
+    except urllib.error.HTTPError as e:
+        try:
+            err = json.loads(e.read().decode("utf-8"))
+            return "⚠️ OpenAI error: %s" % err.get("error", {}).get("message", str(e))
+        except Exception:
+            return "⚠️ OpenAI error: %s" % str(e)
+    except Exception as e:
+        return "⚠️ خطأ: %s" % str(e)
+
+
 def fetch_ai_summary(symbol, selected_data, flow, fund, news_items, smc, wyk, cvp, harm, ew, ollama_url="http://localhost:11434", model="llama3"):
     news_txt = ""
     if news_items:
@@ -1424,6 +1473,8 @@ def fetch_ai_summary(symbol, selected_data, flow, fund, news_items, smc, wyk, cv
         + "SMC: %s | Wyckoff: %s | CPR: %s | Harmonic: %s | Elliott: %s\n" % (smc_txt, wyk_txt, cvp_txt, harm_txt, ew_txt)
         + "المالی: %s\n\nالأخبار:\n%s\n\nأجب بالعربية، مختصر، مع توصية واضحة (🟢 شراء / 🟡 احتفاظ / 🔴 بيع) و3 مخاطر." % (fund_txt, news_txt or "لا توجد أخبار."))
 
+    if not ollama_url or not ollama_url.strip():
+        ollama_url = "http://localhost:11434"
     url = ollama_url.rstrip("/") + "/api/generate"
     payload = json.dumps({"model": model, "prompt": prompt, "stream": False}).encode("utf-8")
     req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
@@ -1432,7 +1483,7 @@ def fetch_ai_summary(symbol, selected_data, flow, fund, news_items, smc, wyk, cv
             data = json.loads(resp.read().decode("utf-8"))
         return data.get("response", "⚠️ لا توجد استجابة من Ollama.")
     except urllib.error.URLError as e:
-        return "⚠️ Ollama غير متاح (%s). تأكد من تشغيل `ollama serve` و `ollama pull %s`." % (str(e), model)
+        return "⚠️ Ollama غير متاح (%s).\n\n**إذا كنت على Streamlit Cloud:** Ollama (local) لا يعمل على Cloud. استخدم OpenAI/Anthropic API بدلاً.\n**إذا كنت local:** تأكد من تشغيل `ollama serve` و `ollama pull %s`." % (str(e), model)
     except Exception as e:
         return "⚠️ خطأ: %s" % str(e)
 
@@ -3481,16 +3532,28 @@ with tab_lab:
         with t_ai:
             st.markdown("#### AI Stock Summary (Ollama local)")
             st.info("يتطلب Ollama running locally: ollama serve + ollama pull llama3")
-            aic1, aic2, aic3 = st.columns(3)
+            aic0, aic1, aic2, aic3 = st.columns(4)
+            with aic0:
+                ai_provider = st.selectbox("Provider:", ["Ollama (local)", "OpenAI"], key="ai_provider_sel")
             with aic1:
-                ai_model = st.selectbox("النموذج:", ["llama3", "mistral", "qwen2.5", "gemma2"], key="ai_model_sel")
+                if ai_provider == "Ollama (local)":
+                    ai_model = st.selectbox("النموذج:", ["llama3", "mistral", "qwen2.5", "gemma2"], key="ai_model_sel")
+                else:
+                    ai_model = st.selectbox("Model:", ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini"], key="ai_model_sel_oa")
             with aic2:
-                ai_url = st.text_input("Ollama URL:", value=st.session_state.get("ollama_url", "http://localhost:11434"), key="ai_url_in")
+                if ai_provider == "Ollama (local)":
+                    ai_url = st.text_input("Ollama URL:", value=st.session_state.get("ollama_url", "http://localhost:11434"), key="ai_url_in")
+                else:
+                    ai_key = st.text_input("OpenAI API Key:", value=st.session_state.get("openai_api_key", ""), type="password", key="ai_key_in")
             with aic3:
                 st.write(""); st.write("")
                 if st.button("حفظ", key="ai_save_btn", use_container_width=True):
-                    st.session_state["ollama_url"] = ai_url
-                    st.session_state["ollama_model"] = ai_model
+                    if ai_provider == "Ollama (local)":
+                        st.session_state["ollama_url"] = ai_url
+                        st.session_state["ollama_model"] = ai_model
+                    else:
+                        st.session_state["openai_api_key"] = ai_key
+                        st.session_state["openai_model"] = ai_model
                     st.success("تم الحفظ.")
             if st.button("توليد AI Summary", key="ai_gen_btn", type="primary"):
                 _news = fetch_stock_news(selected_symbol)
@@ -3506,8 +3569,12 @@ with tab_lab:
                 except Exception:
                     pass
                 _fund = fetch_fundamental_analysis(selected_data["Ticker"])
-                with st.spinner("جاري توليد الملخص (30-60 ثانية)..."):
-                    _res = fetch_ai_summary(selected_symbol, selected_data, selected_data.get("intraday_flow", {}), _fund, _news, _smc, _wyk, _cvp, _harm, _ew, ollama_url=st.session_state.get("ollama_url", "http://localhost:11434"), model=st.session_state.get("ollama_model", "llama3"))
+                _provider = st.session_state.get("ai_provider_sel", "Ollama (local)")
+                with st.spinner("جاري توليد الملخص..."):
+                    if _provider == "Ollama (local)":
+                        _res = fetch_ai_summary(selected_symbol, selected_data, selected_data.get("intraday_flow", {}), _fund, _news, _smc, _wyk, _cvp, _harm, _ew, ollama_url=st.session_state.get("ollama_url", "http://localhost:11434"), model=st.session_state.get("ollama_model", "llama3"))
+                    else:
+                        _res = fetch_ai_summary_openai(selected_symbol, selected_data, selected_data.get("intraday_flow", {}), _fund, _news, _smc, _wyk, _cvp, _harm, _ew, api_key=st.session_state.get("openai_api_key", ""), model=st.session_state.get("openai_model", "gpt-4o-mini"))
                 st.markdown("#### AI Summary")
                 st.markdown(_res)
 
@@ -3626,6 +3693,8 @@ alter table tg_alerts_log disable row level security;
         st.session_state["profile_name"] = st.text_input("👤 اسم الملف (Profile):", value=st.session_state.get("profile_name", ""), placeholder="مثال: علي")
         st.session_state["ollama_url"] = st.text_input("Ollama URL:", value=st.session_state.get("ollama_url", "http://localhost:11434"))
         st.session_state["ollama_model"] = st.selectbox("Ollama Model:", ["llama3", "mistral", "qwen2.5", "gemma2"])
+        st.session_state["openai_api_key"] = st.text_input("OpenAI API Key (optional):", value=st.session_state.get("openai_api_key", get_secret_safe("OPENAI_API_KEY")), type="password")
+        st.session_state["openai_model"] = st.selectbox("OpenAI Model:", ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini"], key="oa_model_set")
         st.session_state["cfg_capital"] = st.number_input("💰 رأس المال للمقترحات (ج.م):", min_value=5000, value=capital, step=5000)
         st.session_state["cfg_risk_pct"] = st.slider("🛡️ نسبة المخاطرة في الصفقة الواحدة (%):", 0.5, 5.0, risk_pct, 0.25)
         st.session_state["cfg_min_turnover"] = st.number_input("💧 الحد الأدنى للسيولة اليومية (مليون ج.م):", 0.0, 100.0, min_turnover_m, 0.25)
