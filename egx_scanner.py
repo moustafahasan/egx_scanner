@@ -3439,10 +3439,40 @@ with tab_lab:
         with t_upload:
             st.markdown("#### 📥 رفع بيانات تاريخية (CSV/Excel) — حل لأسهم EGX بدون Yahoo")
             st.info("💡 **كيفية الحصول على البيانات:** Mubasher/EGX → تصدير CSV/Excel (OHLCV) → رفع هنا. أو Yahoo Finance → download CSV.")
-            up_file = st.file_uploader("📎 ارفع ملف CSV/Excel (أعمدة: Date, Open, High, Low, Close, Volume):", type=["csv", "xlsx", "xls"], key="hist_upload")
+            up_file = st.file_uploader("📎 ارفع ملف CSV/Excel/PDF (أعمدة: Date, Open, High, Low, Close, Volume):", type=["csv", "xlsx", "xls", "pdf"], key="hist_upload")
             if up_file is not None:
                 try:
-                    if up_file.name.lower().endswith(".csv"):
+                    if up_file.name.lower().endswith('.pdf'):
+                        from pypdf import PdfReader
+                        import io as _io, re as _re
+                        _reader = PdfReader(_io.BytesIO(up_file.read()))
+                        _full = '\n'.join([p.extract_text() or '' for p in _reader.pages])
+                        _lines = [ln.strip() for ln in _full.splitlines() if ln.strip()]
+                        _rows = []
+                        for ln in _lines:
+                            _m_date = None
+                            for pat in [r'\d{4}-\d{2}-\d{2}', r'\d{2}/\d{2}/\d{4}', r'\d{2}-\d{2}-\d{4}']:
+                                _mm = _re.search(pat, ln)
+                                if _mm:
+                                    _m_date = _mm.group(0)
+                                    break
+                            if not _m_date:
+                                continue
+                            _nums = [float(x) for x in _re.findall(r'\b\d+(?:\.\d+)?\b', ln)]
+                            _date_nums = [int(x) for x in _re.findall(r'\b\d+\b', _m_date)]
+                            _valid = [n for n in _nums if n not in _date_nums and 0.01 <= n <= 1e9]
+                            if len(_valid) >= 4:
+                                _rows.append([_m_date] + _valid[:5])
+                        if not _rows:
+                            st.warning('⚠️ لم يتم العثور على بيانات OHLCV في PDF. تأكد أن الملف يحتوي على جدول (Date, Open, High, Low, Close, Volume).')
+                            _df_up = pd.DataFrame()
+                        else:
+                            _cols = ['Date'] + ['Open', 'High', 'Low', 'Close', 'Volume'][:len(_rows[0])-1]
+                            _df_up = pd.DataFrame(_rows, columns=_cols)
+                            for c in ['Open', 'High', 'Low', 'Close', 'Volume']:
+                                if c not in _df_up.columns:
+                                    _df_up[c] = 0.0
+                    elif up_file.name.lower().endswith('.csv'):
                         _df_up = pd.read_csv(up_file)
                     else:
                         _df_up = pd.read_excel(up_file)
