@@ -1481,109 +1481,25 @@ def score_stock_from_tv(q: dict, market_median_perf1m: float, capital: float, ri
         "الأفق الزمني": estimate_time_horizon(atr14, close, pace_rvol, score)
     }
 
-def fetch_twelve_data_history(symbol: str, api_key: str, outputsize: int = 400) -> pd.DataFrame:
-    """Fallback historical data from Twelve Data (free API key). V11.3."""
-    if not api_key:
-        return pd.DataFrame()
-    # Strip .CA suffix and map to TD symbol
-    sym = symbol.upper().replace(".CA", "").strip()
-    url = "https://api.twelvedata.com/time_series?symbol=%s&exchange=EGX&interval=1day&outputsize=%d&apikey=%s" % (sym, outputsize, api_key)
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_single_stock_history(ticker: str) -> pd.DataFrame:
     try:
-        import urllib.request, json
-        with urllib.request.urlopen(url, timeout=15) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        if data.get("status") == "error" or "values" not in data:
+        df = yf.download(ticker, period="2y", interval="1d", progress=False, auto_adjust=True)
+        if df is None or df.empty:
             return pd.DataFrame()
-        rows = []
-        for v in data["values"]:
-            rows.append({
-                "Date": v["datetime"],
-                "Open": float(v["open"]),
-                "High": float(v["high"]),
-                "Low": float(v["low"]),
-                "Close": float(v["close"]),
-                "Volume": float(v.get("volume", 0) or 0),
-            })
-        if not rows:
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        df = df.dropna(subset=["Close", "High", "Low", "Open", "Volume"])
+        if df.empty:
             return pd.DataFrame()
-        df = pd.DataFrame(rows)
-        df["Date"] = pd.to_datetime(df["Date"])
-        df = df.set_index("Date").sort_index()
         df["EMA20"] = df["Close"].ewm(span=20, adjust=False).mean()
         df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
         df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
         df["VolSMA20"] = df["Volume"].rolling(20).mean()
-        # ATR
-        tr = pd.concat([df["High"]-df["Low"], (df["High"]-df["Close"].shift(1)).abs(), (df["Low"]-df["Close"].shift(1)).abs()], axis=1).max(axis=1)
-        df["ATR"] = tr.rolling(14).mean()
-        df["ATR14"] = df["ATR"]
-        return df.dropna(subset=["Close", "High", "Low", "Open"])
-    except Exception as e:
-        print(f"[TwelveData Error] {symbol}: {e}")
+        return df
+    except Exception:
         return pd.DataFrame()
 
-
-@st.cache_data(ttl=1800, show_spinner=False)
-def fetch_single_stock_history(ticker: str) -> pd.DataFrame:
-    # 1) Try Yahoo Finance first
-    try:
-        df = yf.download(ticker, period="2y", interval="1d", progress=False, auto_adjust=True)
-        if df is not None and not df.empty:
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-            df = df.dropna(subset=["Close", "High", "Low", "Open", "Volume"])
-            if not df.empty:
-                df["EMA20"] = df["Close"].ewm(span=20, adjust=False).mean()
-                df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
-                df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
-                df["VolSMA20"] = df["Volume"].rolling(20).mean()
-                tr = pd.concat([df["High"]-df["Low"], (df["High"]-df["Close"].shift(1)).abs(), (df["Low"]-df["Close"].shift(1)).abs()], axis=1).max(axis=1)
-                df["ATR"] = tr.rolling(14).mean()
-                df["ATR14"] = df["ATR"]
-                return df
-    except Exception:
-        pass
-    # 2) Fallback: Twelve Data (if API key set)
-    td_key = st.session_state.get("twelve_data_key") or get_secret_safe("TWELVE_DATA_API_KEY")
-    if td_key:
-        df = fetch_twelve_data_history(ticker, td_key)
-        if not df.empty:
-            return df
-    return pd.DataFrame()
-
-# ==========================================
-# محركات التحليل المؤسسي العشرة
-# ==========================================
-def extract_zigzag_pivots(df: pd.DataFrame, pct_thresh: float = 0.05) -> list:
-    if df is None or len(df) < 5:
-        return []
-    highs, lows, dates = df["High"].values, df["Low"].values, df.index
-    pivots, trend, last_p, last_idx = [], 0, float(highs[0]), 0
-
-    for i in range(1, len(df)):
-        h, l = float(highs[i]), float(lows[i])
-        if trend == 0:
-            if h >= last_p * (1 + pct_thresh):
-                pivots.append({"idx": last_idx, "date": dates[last_idx], "price": float(lows[last_idx]), "type": "L"})
-                trend, last_p, last_idx = 1, h, i
-            elif l <= last_p * (1 - pct_thresh):
-                pivots.append({"idx": last_idx, "date": dates[last_idx], "price": float(highs[last_idx]), "type": "H"})
-                trend, last_p, last_idx = -1, l, i
-        elif trend == 1:
-            if h >= last_p:
-                last_p, last_idx = h, i
-            elif l <= last_p * (1 - pct_thresh):
-                pivots.append({"idx": last_idx, "date": dates[last_idx], "price": last_p, "type": "H"})
-                trend, last_p, last_idx = -1, l, i
-        elif trend == -1:
-            if l <= last_p:
-                last_p, last_idx = l, i
-            elif h >= last_p * (1 + pct_thresh):
-                pivots.append({"idx": last_idx, "date": dates[last_idx], "price": last_p, "type": "L"})
-                trend, last_p, last_idx = 1, h, i
-
-    pivots.append({"idx": last_idx, "date": dates[last_idx], "price": last_p, "type": "H" if trend >= 0 else "L"})
-    return pivots
 
 def analyze_smc_ict(df: pd.DataFrame) -> dict:
     sub = df.tail(120).copy()
@@ -2189,6 +2105,11 @@ scanner_results = []
 
 for sym, q_data in raw_egx_tv_map.items():
     analyzed = score_stock_from_tv(q_data, market_median_perf1m, capital, risk_pct, fee_rate, session_info["progress"])
+    try:
+        _has_hist = not fetch_single_stock_history(analyzed.get("Ticker", sym + ".CA")).empty
+    except Exception:
+        _has_hist = False
+    analyzed["توفر البيانات"] = "📊 Live+History" if _has_hist else "📡 Live only"
     all_analyzed_map[sym] = analyzed
     if only_leaders and sym not in LEADERS_EGX_SYMBOLS and sym not in COMMODITIES:
         continue
@@ -2219,7 +2140,8 @@ for known_sym in set(list(EGX_ARABIC_NAMES.keys()) + portfolio_clean_syms):
             "intraday_flow": analyze_intraday_flow({}, fallback_close=c_val, session_progress=session_info["progress"]),
             "tv_raw": {},
             "TradingView": f"https://www.tradingview.com/chart/?symbol=EGX:{known_sym}",
-            "الأفق الزمني": estimate_time_horizon(atr_val, c_val, 1.0, 0)
+            "الأفق الزمني": estimate_time_horizon(atr_val, c_val, 1.0, 0),
+            "توفر البيانات": "📡 Live only"
         }
 
 scanner_results.sort(key=lambda x: (x["السكور"], x["intraday_flow"]["flow_score"], x["الفوليوم"]), reverse=True)
@@ -2342,6 +2264,7 @@ for item in my_portfolio:
         "trailing_enabled": trailing_on, "trailing_stage": trailing_stage,
         "TradingView": f"https://www.tradingview.com/chart/?symbol=EGX:{sym}",
         "الأفق الزمني": (sinfo.get("الأفق الزمني") if sinfo else "—"),
+        "توفر البيانات": (sinfo.get("توفر البيانات") if sinfo else "📡 Live only"),
         "stock_info": sinfo
     })
 
@@ -2454,7 +2377,7 @@ with tab_radar:
             df_rad = df_rad[df_rad["نوع الإشارة"] == sig_filter]
 
         st.dataframe(
-            df_rad[["الرمز", "اسم الشركة", "السكور", "الرأي اللحظي", "نوع الإشارة", "الإغلاق", "التغير %", "الفوليوم", "فرق VWAP %", "السيولة (مليون)", "الوقف (2xATR)", "TP1", "TP2", "الأسهم", "صافي TP1", "الأفق الزمني", "TradingView"]],
+            df_rad[["الرمز", "اسم الشركة", "السكور", "الرأي اللحظي", "نوع الإشارة", "الإغلاق", "التغير %", "الفوليوم", "فرق VWAP %", "السيولة (مليون)", "الوقف (2xATR)", "TP1", "TP2", "الأسهم", "صافي TP1", "توفر البيانات", "الأفق الزمني", "TradingView"]],
             use_container_width=True, hide_index=True, height=400,
             column_config={
                 "TradingView": st.column_config.LinkColumn("شارت TV", display_text="فتح ↗"),
@@ -2522,7 +2445,7 @@ with tab_portfolio:
                     st.success("✅ تم الإرسال لتليجرام!") if ok_r else st.error(f"❌ {r_m}")
 
             st.dataframe(
-                pd.DataFrame(portfolio_rows)[["الرمز", "اسم الشركة", "الرأي اللحظي", "حالة التنبيه", "الوقف المتحرك", "السكور الفني", "الكمية", "متوسط الشراء", "السعر الحالي", "صافي الربح/الخسارة", "العائد %", "وقف الخسارة", "بُعد الوقف %", "TP1", "TP2", "الأفق الزمني", "TradingView"]],
+                pd.DataFrame(portfolio_rows)[["الرمز", "اسم الشركة", "الرأي اللحظي", "حالة التنبيه", "الوقف المتحرك", "السكور الفني", "الكمية", "متوسط الشراء", "السعر الحالي", "صافي الربح/الخسارة", "العائد %", "وقف الخسارة", "بُعد الوقف %", "TP1", "TP2", "توفر البيانات", "الأفق الزمني", "TradingView"]],
                 use_container_width=True, hide_index=True,
                 column_config={
                     "TradingView": st.column_config.LinkColumn("شارت TV", display_text="فتح ↗"),
@@ -2882,6 +2805,7 @@ with tab_lab:
                 <span class="txt-cyan" style="font-size:22px;font-weight:900;">{selected_symbol}</span>
                 <span class="txt-gold" style="font-size:17px;font-weight:800;margin-right:10px;">{selected_data['اسم الشركة']}</span>
                 <div style="font-size:13px;color:#94A3B8;margin-top:3px;">{selected_data['التشخيص الفني']}</div>
+                <div style="font-size:11px;color:#B91C1C;margin-top:2px;">{("📡 <b>Live only</b> (TradingView) — التحليل التاريخي (SMC/Wyckoff/...) غير متوفر. استخدم التدفق اللحظي للقرار." if not fetch_single_stock_history(selected_data["Ticker"]).shape[0] else "📊 <b>Live + History</b> (TradingView + Yahoo) — التحليل التاريخي متاح.")}</div>
                 <div style="font-size:11px;color:#64748B;margin-top:2px;">📡 التدفق اللحظي: TradingView (100% EGX) | 📊 التاريخي: Yahoo Finance (محدود)</div>
                 <div style="font-size:12px;margin-top:4px;"><b>MTF:</b> {mtf_txt}</div>
             </div>
@@ -3437,7 +3361,6 @@ alter table tg_alerts_log disable row level security;
         st.session_state["theme_mode"] = st.radio("theme:", ["light (nahari)", "dark (dakan)"], index=(0 if st.session_state.get("theme_mode","light")=="light" else 1), horizontal=True)
         st.session_state["theme_mode"] = "light" if "light" in st.session_state["theme_mode"] else "dark"
         st.session_state["profile_name"] = st.text_input("👤 اسم الملف (Profile):", value=st.session_state.get("profile_name", ""), placeholder="مثال: علي")
-        st.session_state["twelve_data_key"] = st.text_input("🔑 Twelve Data API Key (optional, free):", value=st.session_state.get("twelve_data_key", get_secret_safe("TWELVE_DATA_API_KEY")), type="password")
         st.session_state["cfg_capital"] = st.number_input("💰 رأس المال للمقترحات (ج.م):", min_value=5000, value=capital, step=5000)
         st.session_state["cfg_risk_pct"] = st.slider("🛡️ نسبة المخاطرة في الصفقة الواحدة (%):", 0.5, 5.0, risk_pct, 0.25)
         st.session_state["cfg_min_turnover"] = st.number_input("💧 الحد الأدنى للسيولة اليومية (مليون ج.م):", 0.0, 100.0, min_turnover_m, 0.25)
