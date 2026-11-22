@@ -474,6 +474,34 @@ EGX_ARABIC_NAMES = {
 
 LEADERS_EGX_SYMBOLS = set(list(EGX_ARABIC_NAMES.keys())[:45])
 
+# ===== Sector mapping (V11.4) =====
+SECTOR_MAP = {
+    "COMI": "بنوك", "ADIB": "بنوك", "CIEB": "بنوك", "QNBA": "بنوك", "FAIT": "بنوك", "FAITA": "بنوك",
+    "HDBK": "بنوك", "EXPA": "بنوك", "CANA": "بنوك", "SAUD": "بنوك", "EGBE": "بنوك", "ABUK": "أسماء/بترو",
+    "MFPC": "أسماء/بترو", "SWDY": "صناعة", "EAST": "استهلاكي", "EFIH": "مالية", "FWRY": "تقنية",
+    "ESRS": "حديد/صلب", "ETEL": "اتصالات", "EKHO": "قابضة", "EKHOA": "قابضة", "ORAS": "بناء",
+    "OCDI": "عقار", "PHDC": "عقار", "HELI": "عقار", "MNHD": "عقار", "MASR": "عقار", "EMFD": "عقار",
+    "ORHD": "عقار", "SKPC": "بتروكيماويات", "AMOC": "بتروكيماويات", "JUFO": "غذائي", "EFID": "غذائي",
+    "DOMT": "غذائي", "OLFI": "غذائي", "POUL": "غذائي", "ISPH": "دواء", "CLHO": "صحة",
+    "RMDA": "دواء", "PHAR": "دواء", "SPMD": "صحة", "CIRA": "عقار", "BTFH": "مالية",
+    "CIHC": "مالية", "DSCW": "ملابس", "KABO": "ملابس", "KABL": "كابلات", "RACC": "تقنية",
+    "RAYA": "مالية", "CCAP": "مالية", "EGAL": "ألمنيوم", "IRON": "حديد/صلب", "BINV": "مالية",
+    "VALU": "مالية", "ACTF": "مالية", "TAQA": "طاقة", "MOIL": "ملاحة", "ZMID": "عقار",
+    "ELSH": "عقار", "UNIT": "عقار", "MENA": "سياحة", "PRDC": "عقار", "UEGC": "بناء",
+    "ELKA": "عقار", "GBCO": "سيارات", "MTIE": "تجزئة", "MPRC": "إعلام", "ATLC": "تأجير",
+    "ISMQ": "غذائي", "TANM": "عقار", "AREH": "سياحة", "ICEN": "بناء", "EGTS": "سياحة",
+    "ALCN": "ملاحة", "CSAG": "ملاحة", "ETRS": "نقل", "MILS": "غذائي", "CEFM": "غذائي",
+    "ARCC": "أسمنت", "MCQE": "أسمنت", "SVCE": "أسمنت", "SUCE": "أسمنت", "ACAMD": "مالية",
+    "KRDI": "مالية", "BOYN": "مالية", "TMGH": "عقار", "HRHO": "مالية", "IDRE": "عقار",
+    "ENGC": "بناء", "EEII": "Industrial", "ARAB": "مالية", "FERC": "طاقة", "BONY": "مالية",
+    "GOLD": "معادن", "SILVER": "معادن", "OIL": "بترول", "BRENT": "بترول", "NATGAS": "غاز",
+    "COPPER": "معادن", "PLATINUM": "معادن",
+}
+
+def get_sector(sym):
+    return SECTOR_MAP.get(sym.upper().replace(".CA", "").strip(), "أخرى")
+
+
 # ===== معادن و بترول (Commodities) — V11.3 =====
 COMMODITIES = {
     "GOLD":   ("ذهب (Gold)", "GC=F"),
@@ -1373,6 +1401,41 @@ def fetch_commodities() -> dict:
             print(f"[Commodity Fetch Error] {sym}: {e}")
             continue
     return out
+
+
+def fetch_ai_summary(symbol, selected_data, flow, fund, news_items, smc, wyk, cvp, harm, ew, ollama_url="http://localhost:11434", model="llama3"):
+    news_txt = ""
+    if news_items:
+        for n in news_items[:5]:
+            news_txt += "- %s (%s)\n" % (n.get("title", ""), n.get("sentiment", ""))
+    smc_txt = smc.get("structure", "") if isinstance(smc, dict) else ""
+    wyk_txt = wyk.get("phase", "") if isinstance(wyk, dict) else ""
+    cvp_txt = cvp.get("verdict", "") if isinstance(cvp, dict) else ""
+    harm_txt = harm.get("pattern_name", "") if isinstance(harm, dict) else ""
+    ew_txt = ew.get("wave_name", "") if isinstance(ew, dict) else ""
+    fund_txt = ""
+    if isinstance(fund, dict) and "error" not in fund:
+        fund_txt = "F-Score: %s/%s | P/E: %s | P/B: %s | ROE: %s | Sector: %s" % (fund.get("f_score", 0), fund.get("tests_available", 0), fund.get("pe", "—"), fund.get("pb", "—"), (str(round(fund.get("roe", 0) * 100, 1)) + "%") if fund.get("roe") else "—", fund.get("sector", "—"))
+
+    prompt = ("أنت محلل أسهم محترف في البورصة المصرية (EGX). لخص السهم في 5-8 أسطر عربية + توصية (شراء/احتفاظ/بيع) + 3 مخاطر.\n\n"
+        "السهم: %s (%s)\nالسعر: %s (%s%%)\nالسكور: %s/100 (%s)\n" % (symbol, selected_data.get("اسم الشركة", ""), selected_data.get("الإغلاق", 0), selected_data.get("التغير %", 0), selected_data.get("السكور", 0), selected_data.get("نوع الإشارة", ""))
+        + "التدفق: VWAP %s (%s%%) | RSI15: %s | MACD15: %s | CLV: %s%% | RVOL: %sx\n" % (flow.get("vwap", 0), flow.get("vwap_diff_pct", 0), flow.get("rsi15", 0), flow.get("macd15", 0), flow.get("clv_pct", 0), flow.get("rel_vol", 0))
+        + "SL: %s | TP1: %s | TP2: %s | الأفق: %s | توفر: %s\n" % (selected_data.get("الوقف (2xATR)", 0), selected_data.get("TP1", 0), selected_data.get("TP2", 0), selected_data.get("الأفق الزمني", "—"), selected_data.get("توفر البيانات", "—"))
+        + "SMC: %s | Wyckoff: %s | CPR: %s | Harmonic: %s | Elliott: %s\n" % (smc_txt, wyk_txt, cvp_txt, harm_txt, ew_txt)
+        + "المالی: %s\n\nالأخبار:\n%s\n\nأجب بالعربية، مختصر، مع توصية واضحة (🟢 شراء / 🟡 احتفاظ / 🔴 بيع) و3 مخاطر." % (fund_txt, news_txt or "لا توجد أخبار."))
+
+    url = ollama_url.rstrip("/") + "/api/generate"
+    payload = json.dumps({"model": model, "prompt": prompt, "stream": False}).encode("utf-8")
+    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        return data.get("response", "⚠️ لا توجد استجابة من Ollama.")
+    except urllib.error.URLError as e:
+        return "⚠️ Ollama غير متاح (%s). تأكد من تشغيل `ollama serve` و `ollama pull %s`." % (str(e), model)
+    except Exception as e:
+        return "⚠️ خطأ: %s" % str(e)
+
 
 
 def score_stock_from_tv(q: dict, market_median_perf1m: float, capital: float, risk_pct: float, fee_rate: float, session_progress: float) -> dict:
@@ -2394,6 +2457,27 @@ with tab_radar:
             """, unsafe_allow_html=True)
 
         st.write("")
+        # ===== Sector Rotation Radar (V11.4) =====
+        with st.expander("🧭 Sector Rotation Radar (V11.4)", expanded=False):
+            try:
+                import plotly.express as _px
+                _sec_rows = []
+                for _r in filtered_results:
+                    _sec_rows.append({"sector": get_sector(_r["الرمز"]), "symbol": _r["الرمز"], "change": _r["التغير %"], "score": _r["السكور"], "turnover": _r["السيولة (مليون)"]})
+                if _sec_rows:
+                    _sdf = pd.DataFrame(_sec_rows)
+                    _agg = _sdf.groupby("sector").agg(avg_change=("change","mean"), avg_score=("score","mean"), total_turnover=("turnover","sum"), count=("symbol","count")).reset_index()
+                    _agg = _agg.sort_values("avg_change", ascending=False)
+                    _fig_sec = _px.bar(_agg, x="sector", y="avg_change", color="avg_score", color_continuous_scale="RdYlGn", title="Sector Rotation (avg change %, color=avg score)", text="count")
+                    _fig_sec.update_layout(height=360, template=TPL, paper_bgcolor="#FFFFFF", plot_bgcolor="#F8FAFC", margin=dict(l=10,r=10,t=40,b=10))
+                    st.plotly_chart(_fig_sec, use_container_width=True)
+                    st.dataframe(_agg, use_container_width=True, hide_index=True)
+                else:
+                    st.info("لا توجد بيانات.")
+            except Exception as _e:
+                st.caption("Sector radar error: %s" % _e)
+
+        st.write("")
         rf1, rf2 = st.columns([2, 1])
         with rf1:
             radar_search = st.text_input("🔎 تصفية سريعة بالرمز أو اسم الشركة:", placeholder="اكتب مثلاً: ABUK أو بنك أو أسمدة...")
@@ -2454,6 +2538,23 @@ with tab_portfolio:
         except Exception as _e:
             st.caption("تعذر رسم الخريطة: %s" % _e)
 
+    if portfolio_rows:
+        with st.expander('Performance Attribution (V11.4)', expanded=False):
+            try:
+                _adf = pd.DataFrame(portfolio_rows)
+                _adf['contribution'] = _adf['صافي الربح/الخسارة']
+                _adf['weight'] = _adf['الكمية'] * _adf['السعر الحالي']
+                _tot = _adf['weight'].sum()
+                _adf['weight_pct'] = (_adf['weight'] / _tot * 100).round(1) if _tot > 0 else 0.0
+                _adf = _adf.sort_values('contribution', ascending=False)
+                import plotly.express as _px
+                _fig_attr = _px.bar(_adf, x='الرمز', y='contribution', color='weight_pct', color_continuous_scale='RdYlGn', title='P&L Contribution by Stock (color=portfolio weight %)')
+                _fig_attr.update_layout(height=360, template=TPL, paper_bgcolor='#FFFFFF', plot_bgcolor='#F8FAFC', margin=dict(l=10,r=10,t=40,b=10))
+                st.plotly_chart(_fig_attr, use_container_width=True)
+                st.dataframe(_adf[['الرمز', 'اسم الشركة', 'الكمية', 'السعر الحالي', 'صافي الربح/الخسارة', 'العائد %', 'weight_pct']], use_container_width=True, hide_index=True)
+            except Exception as _e:
+                st.caption('Attribution error: %s' % _e)
+    st.write('')
     ptab_open, ptab_add, ptab_history = st.tabs([
         f"📋 مراكزي المفتوحة والتحكم الآلي ({len(portfolio_rows)})",
         "➕ إضافة سهم / استيراد فواتير ثاندر",
@@ -2849,7 +2950,7 @@ with tab_lab:
         </div>
         """, unsafe_allow_html=True)
 
-        t_flow, t_smc, t_wyk, t_cpr, t_harm, t_ew, t_tech, t_fund, t_gann, t_news, t_bt, t_upload = st.tabs([
+        t_flow, t_smc, t_wyk, t_cpr, t_harm, t_ew, t_tech, t_fund, t_gann, t_news, t_bt, t_upload, t_ai = st.tabs([
             "⚡ التدفق اللحظي وعمق السيولة",
             "🏦 الأموال الذكية و ICT",
             "🐋 وايكوف و PVSRA",
@@ -2861,7 +2962,8 @@ with tab_lab:
             "🪐 التحليل الزمني وجان",
             "📰 الرادار الخبري",
             "🧪 Backtest",
-            "📥 رفع بيانات تاريخية (CSV/Excel)"
+            "📥 رفع بيانات تاريخية (CSV/Excel)",
+            "🤖 AI Summary (Ollama)"
         ])
 
         # 1) التدفق اللحظي وعمق السيولة الأوتوماتيكي 100%
@@ -3375,6 +3477,41 @@ with tab_lab:
                     st.error("⚠️ خطأ في قراءة الملف: %s" % e)
 
 
+        # 13) AI Stock Summary (Ollama local) V11.4
+        with t_ai:
+            st.markdown("#### AI Stock Summary (Ollama local)")
+            st.info("يتطلب Ollama running locally: ollama serve + ollama pull llama3")
+            aic1, aic2, aic3 = st.columns(3)
+            with aic1:
+                ai_model = st.selectbox("النموذج:", ["llama3", "mistral", "qwen2.5", "gemma2"], key="ai_model_sel")
+            with aic2:
+                ai_url = st.text_input("Ollama URL:", value=st.session_state.get("ollama_url", "http://localhost:11434"), key="ai_url_in")
+            with aic3:
+                st.write(""); st.write("")
+                if st.button("حفظ", key="ai_save_btn", use_container_width=True):
+                    st.session_state["ollama_url"] = ai_url
+                    st.session_state["ollama_model"] = ai_model
+                    st.success("تم الحفظ.")
+            if st.button("توليد AI Summary", key="ai_gen_btn", type="primary"):
+                _news = fetch_stock_news(selected_symbol)
+                _smc = {}; _wyk = {}; _cvp = {}; _harm = {}; _ew = {}
+                try:
+                    _df_h = fetch_single_stock_history(selected_data["Ticker"])
+                    if not _df_h.empty and len(_df_h) >= 30:
+                        _smc = analyze_smc_ict(_df_h)
+                        _wyk = analyze_wyckoff_vsa(_df_h)
+                        _cvp = analyze_cpr_and_vp(_df_h)
+                        _harm = analyze_harmonic_patterns(_df_h)
+                        _ew = analyze_elliott_waves(_df_h)
+                except Exception:
+                    pass
+                _fund = fetch_fundamental_analysis(selected_data["Ticker"])
+                with st.spinner("جاري توليد الملخص (30-60 ثانية)..."):
+                    _res = fetch_ai_summary(selected_symbol, selected_data, selected_data.get("intraday_flow", {}), _fund, _news, _smc, _wyk, _cvp, _harm, _ew, ollama_url=st.session_state.get("ollama_url", "http://localhost:11434"), model=st.session_state.get("ollama_model", "llama3"))
+                st.markdown("#### AI Summary")
+                st.markdown(_res)
+
+
 # ==============================================================================
 # التبويب 4: الإعدادات والربط السحابي والتليجرام
 # ==============================================================================
@@ -3487,6 +3624,8 @@ alter table tg_alerts_log disable row level security;
         st.session_state["theme_mode"] = st.radio("theme:", ["light (nahari)", "dark (dakan)"], index=(0 if st.session_state.get("theme_mode","light")=="light" else 1), horizontal=True)
         st.session_state["theme_mode"] = "light" if "light" in st.session_state["theme_mode"] else "dark"
         st.session_state["profile_name"] = st.text_input("👤 اسم الملف (Profile):", value=st.session_state.get("profile_name", ""), placeholder="مثال: علي")
+        st.session_state["ollama_url"] = st.text_input("Ollama URL:", value=st.session_state.get("ollama_url", "http://localhost:11434"))
+        st.session_state["ollama_model"] = st.selectbox("Ollama Model:", ["llama3", "mistral", "qwen2.5", "gemma2"])
         st.session_state["cfg_capital"] = st.number_input("💰 رأس المال للمقترحات (ج.م):", min_value=5000, value=capital, step=5000)
         st.session_state["cfg_risk_pct"] = st.slider("🛡️ نسبة المخاطرة في الصفقة الواحدة (%):", 0.5, 5.0, risk_pct, 0.25)
         st.session_state["cfg_min_turnover"] = st.number_input("💧 الحد الأدنى للسيولة اليومية (مليون ج.م):", 0.0, 100.0, min_turnover_m, 0.25)
