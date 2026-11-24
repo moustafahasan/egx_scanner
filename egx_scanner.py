@@ -2875,10 +2875,13 @@ with tab_lab:
         )
         selected_data = all_analyzed_map[selected_symbol]
         chg_s = selected_data["التغير %"]
+        # Prefetch history once (V11.4) — avoids 7 redundant yfinance calls
+        with st.spinner("جاري تحميل البيانات التاريخية..."):
+            _lab_df = fetch_single_stock_history(selected_data["Ticker"])
 
         mtf_txt = "⚪ لا بيانات تاريخية (Yahoo)"
         try:
-            _df_mtf = fetch_single_stock_history(selected_data["Ticker"])
+            _df_mtf = _lab_df
             if not _df_mtf.empty and len(_df_mtf) >= 40:
                 _w = _df_mtf.resample("W").agg({"Open":"first","High":"max","Low":"min","Close":"last","Volume":"sum"}).dropna()
                 if len(_w) >= 8:
@@ -3003,7 +3006,7 @@ with tab_lab:
 
         # 2) الأموال الذكية و ICT
         with t_smc:
-            df_h = fetch_single_stock_history(selected_data["Ticker"])
+            df_h = _lab_df
             if df_h.empty or len(df_h) < 30:
                 st.info("ℹ️ البيانات التاريخية غير كافية لرسم مناطق SMC لهذا السهم.")
             else:
@@ -3155,7 +3158,7 @@ with tab_lab:
 
         # 6) موجات إليوت
         with t_ew:
-            df_ew = fetch_single_stock_history(selected_data["Ticker"])
+            df_ew = _lab_df
             if df_ew.empty or len(df_ew) < 25:
                 st.info("ℹ️ البيانات التاريخية غير كافية لترقيم موجات إليوت.")
             else:
@@ -3269,7 +3272,7 @@ with tab_lab:
 
         # 9) التحليل الزمني
         with t_gann:
-            df_t = fetch_single_stock_history(selected_data["Ticker"])
+            df_t = _lab_df
             if df_t.empty:
                 st.info("ℹ️ البيانات التاريخية غير متوفرة لرسم خريطة جان.")
             else:
