@@ -17,6 +17,12 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 import egx_core as core
+import egx_schools as schools
+from egx_schools import (
+    run_simple_backtest, analyze_candlestick_patterns, analyze_support_resistance, compute_gann_simple,
+    extract_zigzag_pivots, analyze_smc_ict, analyze_wyckoff_vsa, analyze_cpr_and_vp,
+    analyze_harmonic_patterns, analyze_elliott_waves, get_planetary_longitudes, deg_to_zodiac,
+)
 
 # ==========================================
 # إعدادات الصفحة والتصميم البصري الداكن (V11.4)
@@ -1200,86 +1206,6 @@ def analyze_intraday_flow(q: dict, fallback_close: float = 0.0, session_progress
 evaluate_smart_stop_loss = core.evaluate_smart_stop_loss
 
 
-def run_simple_backtest(df, capital=100000.0, risk_pct=1.5, fee_rate=core.FEE_PER_SIDE_TRADER):
-    if df is None or len(df) < 60:
-        return {"trades": [], "equity": [], "metrics": {}}
-    d = df.copy()
-    d["RVOL"] = d["Volume"] / d["VolSMA20"].replace(0, float("nan"))
-    trades = []
-    equity = [capital]
-    cash = capital
-    pos = None
-    for i in range(30, len(d)):
-        row = d.iloc[i]
-        close = float(row["Close"])
-        ema20 = float(row["EMA20"])
-        ema50 = float(row["EMA50"])
-        atr = float(row["ATR14"]) if "ATR14" in d.columns else close * 0.025
-        # fetch atr from df if present
-        if "ATR" in d.columns:
-            atr = float(row["ATR"])
-        rvol = float(row["RVOL"]) if (row["RVOL"] == row["RVOL"]) else 1.0
-        date = d.index[i]
-        if pos is None:
-            if close > ema20 > ema50 and rvol >= 1.2:
-                sl = max(0.01, close - 2.0 * atr)
-                r_u = max(0.01, close - sl)
-                tp1 = close + 1.618 * r_u
-                risk_amt = cash * (risk_pct / 100.0)
-                shares = int(risk_amt // r_u) if r_u > 0 else 0
-                if shares > 0:
-                    pos = {"entry": close, "shares": shares, "sl": sl, "tp1": tp1, "date": date, "cost": shares * close}
-        else:
-            hi = float(row["High"])
-            lo = float(row["Low"])
-            exit_p = None
-            reason = ""
-            if lo <= pos["sl"]:
-                exit_p = pos["sl"]
-                reason = "SL"
-            elif hi >= pos["tp1"]:
-                exit_p = pos["tp1"]
-                reason = "TP1"
-            elif close < ema20:
-                exit_p = close
-                reason = "EMA20 break"
-            if exit_p is not None:
-                proceeds = pos["shares"] * exit_p
-                fees = (pos["cost"] + proceeds) * fee_rate
-                pnl = proceeds - pos["cost"] - fees
-                cash += pnl
-                trades.append({"entry_date": str(pos["date"])[:10], "exit_date": str(date)[:10], "entry": round(pos["entry"], 4), "exit": round(exit_p, 4), "shares": pos["shares"], "pnl": round(pnl, 4), "reason": reason})
-                equity.append(cash)
-                pos = None
-    if pos is not None:
-        last_close = float(d["Close"].iloc[-1])
-        proceeds = pos["shares"] * last_close
-        fees = (pos["cost"] + proceeds) * fee_rate
-        pnl = proceeds - pos["cost"] - fees
-        cash += pnl
-        trades.append({"entry_date": str(pos["date"])[:10], "exit_date": str(d.index[-1])[:10], "entry": round(pos["entry"], 4), "exit": round(last_close, 4), "shares": pos["shares"], "pnl": round(pnl, 4), "reason": "EOD"})
-        equity.append(cash)
-    wins = [t for t in trades if t["pnl"] > 0]
-    losses = [t for t in trades if t["pnl"] <= 0]
-    total_pnl = sum(t["pnl"] for t in trades)
-    wr = (len(wins) / len(trades) * 100) if trades else 0.0
-    pf = (sum(t["pnl"] for t in wins) / abs(sum(t["pnl"] for t in losses))) if (losses and sum(t["pnl"] for t in losses) != 0) else 0.0
-    maxdd = 0.0
-    peak = equity[0] if equity else capital
-    for v in equity:
-        if v > peak:
-            peak = v
-        dd = peak - v
-        if dd > maxdd:
-            maxdd = dd
-    metrics = {
-        "trades": len(trades), "wins": len(wins), "losses": len(losses),
-        "win_rate": round(wr, 1), "profit_factor": round(pf, 4),
-        "total_pnl": round(total_pnl, 4), "final_equity": round(cash, 4),
-        "max_drawdown": round(maxdd, 4), "return_pct": round((cash - capital) / capital * 100, 4),
-    }
-    return {"trades": trades, "equity": equity, "metrics": metrics}
-
 def estimate_time_horizon(atr: float, close: float, rvol: float = 1.0, score: int = 50) -> str:
     """تقدير أفق زمني (أيام تداول) حسب ATR% وRVOL والسكور — V11.4."""
     if close <= 0 or atr <= 0:
@@ -1404,124 +1330,6 @@ def fetch_commodities() -> dict:
     return out
 
 
-def analyze_candlestick_patterns(df: pd.DataFrame) -> dict:
-    """Auto-detect candlestick patterns (V11.4)."""
-    if df is None or len(df) < 5:
-        return {"patterns": [], "verdict": "بيانات غير كافية"}
-    sub = df.tail(10).copy()
-    patterns = []
-    for i in range(1, len(sub)):
-        o, h, l, c = float(sub["Open"].iloc[i]), float(sub["High"].iloc[i]), float(sub["Low"].iloc[i]), float(sub["Close"].iloc[i])
-        po, pc = float(sub["Open"].iloc[i-1]), float(sub["Close"].iloc[i-1])
-        body = abs(c - o)
-        rng = max(1e-6, h - l)
-        upper = h - max(o, c)
-        lower = min(o, c) - l
-        # Hammer (bullish)
-        if lower >= 2 * body and upper <= body and c > o:
-            patterns.append({"التاريخ": str(sub.index[i])[:10], "النمط": "🔨 Hammer (مطرقة — انعكاس صعودي)", "السعر": round(c, 4)})
-        # Shooting star (bearish)
-        if upper >= 2 * body and lower <= body and c < o:
-            patterns.append({"التاريخ": str(sub.index[i])[:10], "النمط": "⭐ Shooting Star (نجمة — انعكاس هابط)", "السعر": round(c, 4)})
-        # Doji
-        if body <= 0.1 * rng and rng > 0:
-            patterns.append({"التاريخ": str(sub.index[i])[:10], "النمط": "✚ Doji (دوجي — تردد)", "السعر": round(c, 4)})
-        # Bullish engulfing
-        if c > o and pc < po and c > po and o < pc and body > abs(pc - po):
-            patterns.append({"التاريخ": str(sub.index[i])[:10], "النمط": "🟢 Bullish Engulfing (ابتلاع صعودي)", "السعر": round(c, 4)})
-        # Bearish engulfing
-        if c < o and pc > po and c < po and o > pc and body > abs(pc - po):
-            patterns.append({"التاريخ": str(sub.index[i])[:10], "النمط": "🔴 Bearish Engulfing (ابتلاع هابط)", "السعر": round(c, 4)})
-        # Morning star (3-candle bullish)
-        if i >= 2:
-            o2, c2 = float(sub["Open"].iloc[i-2]), float(sub["Close"].iloc[i-2])
-            o1, c1 = float(sub["Open"].iloc[i-1]), float(sub["Close"].iloc[i-1])
-            if c2 < o2 and abs(c1 - o1) < 0.3 * abs(c2 - o2) and c > o and c > (o2 + c2) / 2:
-                patterns.append({"التاريخ": str(sub.index[i])[:10], "النمط": "🌅 Morning Star (نجمة صباحية — انعكاس صعودي)", "السعر": round(c, 4)})
-        # Evening star (3-candle bearish)
-        if i >= 2:
-            o2, c2 = float(sub["Open"].iloc[i-2]), float(sub["Close"].iloc[i-2])
-            o1, c1 = float(sub["Open"].iloc[i-1]), float(sub["Close"].iloc[i-1])
-            if c2 > o2 and abs(c1 - o1) < 0.3 * abs(c2 - o2) and c < o and c < (o2 + c2) / 2:
-                patterns.append({"التاريخ": str(sub.index[i])[:10], "النمط": "🌆 Evening Star (نجمة مسائية — انعكاس هابط)", "السعر": round(c, 4)})
-    if not patterns:
-        return {"patterns": [], "verdict": "لا توجد أنماط شموع واضحة في آخر 10 جلسات."}
-    bull = sum(1 for p in patterns if "صعود" in p["النمط"] or "Bullish" in p["النمط"] or "Morning" in p["النمط"])
-    bear = sum(1 for p in patterns if "هابط" in p["النمط"] or "Bearish" in p["النمط"] or "Evening" in p["النمط"])
-    if bull > bear:
-        verdict = "🟢 ميل صعودي (أنماط صعودية)"
-    elif bear > bull:
-        verdict = "🔴 ميل هابطي (أنماط هابطة)"
-    else:
-        verdict = "🟡 تردد (أنماط مختلطة)"
-    return {"patterns": patterns[-8:], "verdict": verdict}
-
-
-def analyze_support_resistance(df: pd.DataFrame, lookback: int = 60) -> dict:
-    """Auto-detect support/resistance levels from pivots (V11.4)."""
-    if df is None or len(df) < 20:
-        return {"levels": [], "verdict": "بيانات غير كافية"}
-    sub = df.tail(lookback).copy()
-    curr = float(sub["Close"].iloc[-1])
-    pivs = extract_zigzag_pivots(sub, pct_thresh=0.03)
-    highs = [p["price"] for p in pivs if p["type"] == "H"]
-    lows = [p["price"] for p in pivs if p["type"] == "L"]
-    # Cluster levels (round to nearest 0.5%)
-    def cluster(vals):
-        if not vals:
-            return []
-        vals = sorted(vals)
-        clusters = []
-        for v in vals:
-            if clusters and abs(v - clusters[-1][0]) / max(1e-6, clusters[-1][0]) < 0.015:
-                clusters[-1][1] += 1
-                clusters[-1][0] = (clusters[-1][0] * (clusters[-1][1]-1) + v) / clusters[-1][1]
-            else:
-                clusters.append([v, 1])
-        return sorted(clusters, key=lambda x: -x[1])
-    h_clusters = cluster(highs)
-    l_clusters = cluster(lows)
-    levels = []
-    for price, cnt in h_clusters[:4]:
-        levels.append({"المستوى": round(price, 4), "النوع": "مقاومة ⬆️", "اللمسات": cnt, "البعد %": round((price - curr) / curr * 100, 2)})
-    for price, cnt in l_clusters[:4]:
-        levels.append({"المستوى": round(price, 4), "النوع": "دعم ⬇️", "اللمسات": cnt, "البعد %": round((price - curr) / curr * 100, 2)})
-    levels.sort(key=lambda x: x["المستوى"])
-    # verdict
-    nearest_sup = max([l["المستوى"] for l in levels if l["النوع"].startswith("دعم") and l["المستوى"] < curr], default=None)
-    nearest_res = min([l["المستوى"] for l in levels if l["النوع"].startswith("مقاومة") and l["المستوى"] > curr], default=None)
-    if nearest_sup and nearest_res:
-        verdict = "🟡 within range (%.2f — %.2f)" % (nearest_sup, nearest_res)
-    elif nearest_res:
-        verdict = "🔴 below resistance (%.2f)" % nearest_res
-    elif nearest_sup:
-        verdict = "🟢 above support (%.2f)" % nearest_sup
-    else:
-        verdict = "⚪ no clear levels"
-    return {"levels": levels, "verdict": verdict, "nearest_support": nearest_sup, "nearest_resistance": nearest_res}
-
-
-def compute_gann_simple(pivot_date, pivot_price, is_pivot_low, current_price):
-    """Simplified Gann (V11.4): Square of 9 price levels + next 3 time cycles. No planetary."""
-    sqrt_p = (pivot_price ** 0.5)
-    sq9 = []
-    for ang in [45, 90, 135, 180, 225, 270, 315, 360]:
-        step = ang / 180.0
-        target = (sqrt_p + step) ** 2 if is_pivot_low else max(0.01, sqrt_p - step) ** 2
-        sq9.append({"الزاوية": str(ang) + "°", "المستوى": round(target, 4), "النوع": "مقاومة ⬆️" if is_pivot_low else "دعم ⬇️", "البعد %": round((target - current_price) / current_price * 100, 2)})
-    # time cycles: next 3 upcoming
-    today = get_cairo_now().date()
-    cycles = [45, 90, 180]
-    time_targets = []
-    for cyc in cycles:
-        target_dt = pivot_date + timedelta(days=cyc)
-        diff = (target_dt - today).days
-        if -30 <= diff <= 180:
-            status = "🔥 نافذة انعكاس نشطة!" if abs(diff) <= 5 else ("بعد %d يوم" % diff if diff > 0 else "مضى %d يوم" % abs(diff))
-            time_targets.append({"الدورة": "دورة %d يوم" % cyc, "التاريخ": target_dt, "الحالة": status})
-    return sq9, time_targets
-
-
 def score_stock_from_tv(q: dict, market_median_perf1m: float, capital: float, risk_pct: float, fee_rate: float, session_progress: float) -> dict:
     sym = q["symbol"]
     close = q["close"]
@@ -1639,387 +1447,10 @@ def fetch_single_stock_history(ticker: str) -> pd.DataFrame:
         df = df.dropna(subset=["Close", "High", "Low", "Open", "Volume"])
         if df.empty:
             return pd.DataFrame()
-        df["EMA20"] = df["Close"].ewm(span=20, adjust=False).mean()
-        df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
-        df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
-        df["VolSMA20"] = df["Volume"].rolling(20).mean()
-        return df
+        return schools.add_indicators(df)  # EMA20/50/200 + VolSMA20 + ATR14
     except Exception:
         return pd.DataFrame()
 
-
-def extract_zigzag_pivots(df: pd.DataFrame, pct_thresh: float = 0.05) -> list:
-    if df is None or len(df) < 5:
-        return []
-    highs, lows, dates = df["High"].values, df["Low"].values, df.index
-    pivots, trend, last_p, last_idx = [], 0, float(highs[0]), 0
-
-    for i in range(1, len(df)):
-        h, l = float(highs[i]), float(lows[i])
-        if trend == 0:
-            if h >= last_p * (1 + pct_thresh):
-                pivots.append({"idx": last_idx, "date": dates[last_idx], "price": float(lows[last_idx]), "type": "L"})
-                trend, last_p, last_idx = 1, h, i
-            elif l <= last_p * (1 - pct_thresh):
-                pivots.append({"idx": last_idx, "date": dates[last_idx], "price": float(highs[last_idx]), "type": "H"})
-                trend, last_p, last_idx = -1, l, i
-        elif trend == 1:
-            if h >= last_p:
-                last_p, last_idx = h, i
-            elif l <= last_p * (1 - pct_thresh):
-                pivots.append({"idx": last_idx, "date": dates[last_idx], "price": last_p, "type": "H"})
-                trend, last_p, last_idx = -1, l, i
-        elif trend == -1:
-            if l <= last_p:
-                last_p, last_idx = l, i
-            elif h >= last_p * (1 + pct_thresh):
-                pivots.append({"idx": last_idx, "date": dates[last_idx], "price": last_p, "type": "L"})
-                trend, last_p, last_idx = 1, h, i
-
-    pivots.append({"idx": last_idx, "date": dates[last_idx], "price": last_p, "type": "H" if trend >= 0 else "L"})
-    return pivots
-
-def analyze_smc_ict(df: pd.DataFrame) -> dict:
-    sub = df.tail(120).copy()
-    curr_p = float(sub["Close"].iloc[-1])
-    fvgs, obs, sweeps = [], [], []
-
-    for i in range(2, len(sub)):
-        h_prev2, l_prev2 = float(sub["High"].iloc[i - 2]), float(sub["Low"].iloc[i - 2])
-        c_prev1, o_prev1 = float(sub["Close"].iloc[i - 1]), float(sub["Open"].iloc[i - 1])
-        h_curr, l_curr, c_curr = float(sub["High"].iloc[i]), float(sub["Low"].iloc[i]), float(sub["Close"].iloc[i])
-        dt_curr = sub.index[i]
-
-        if l_curr > h_prev2:
-            mitigated = float(sub["Low"].iloc[i + 1:].min()) <= h_prev2 if i + 1 < len(sub) else False
-            if not mitigated:
-                fvgs.append({"النوع": "🟢 فجوة شرائية (Bullish FVG)", "من": round(h_prev2, 4), "إلى": round(l_curr, 4), "التاريخ": str(dt_curr)[:10]})
-        if h_curr < l_prev2:
-            mitigated = float(sub["High"].iloc[i + 1:].max()) >= l_prev2 if i + 1 < len(sub) else False
-            if not mitigated:
-                fvgs.append({"النوع": "🔴 فجوة بيعية (Bearish FVG)", "من": round(h_curr, 4), "إلى": round(l_prev2, 4), "التاريخ": str(dt_curr)[:10]})
-
-        if c_prev1 < o_prev1 and c_curr > float(sub["High"].iloc[i - 1]):
-            ob_low, ob_high = float(sub["Low"].iloc[i - 1]), float(sub["High"].iloc[i - 1])
-            if ob_low <= curr_p * 1.15:
-                obs.append({"النوع": "🟢 كتلة طلب مؤسسي (Bullish OB)", "من": round(ob_low, 4), "إلى": round(ob_high, 4), "التاريخ": str(sub.index[i - 1])[:10]})
-        elif c_prev1 > o_prev1 and c_curr < float(sub["Low"].iloc[i - 1]):
-            ob_low, ob_high = float(sub["Low"].iloc[i - 1]), float(sub["High"].iloc[i - 1])
-            if ob_high >= curr_p * 0.85:
-                obs.append({"النوع": "🔴 كتلة عرض مؤسسي (Bearish OB)", "من": round(ob_low, 4), "إلى": round(ob_high, 4), "التاريخ": str(sub.index[i - 1])[:10]})
-
-    pivs = extract_zigzag_pivots(sub, pct_thresh=0.04)
-    structure_state, badge_cls = "⚖️ نطاق عرضي (Range)", "badge-warn"
-    last_swing_high, last_swing_low = None, None
-    highs_p = [p for p in pivs if p["type"] == "H"]
-    lows_p = [p for p in pivs if p["type"] == "L"]
-
-    if len(highs_p) >= 2 and len(lows_p) >= 2:
-        last_swing_high, last_swing_low = highs_p[-2]["price"], lows_p[-2]["price"]
-        if curr_p > last_swing_high:
-            structure_state, badge_cls = "🟢 كسر هيكل صاعد (Bullish BOS)", "badge-bull"
-        elif curr_p < last_swing_low:
-            structure_state, badge_cls = "🔴 كسر هيكل هابط (Bearish BOS)", "badge-bear"
-        elif highs_p[-1]["price"] < highs_p[-2]["price"] and lows_p[-1]["price"] > lows_p[-2]["price"]:
-            structure_state = "🟡 تضييق سيولة (CHoCH محتمل)"
-
-    if len(lows_p) >= 2 and float(sub["Low"].tail(10).min()) < lows_p[-2]["price"] and curr_p > lows_p[-2]["price"]:
-        sweeps.append(f"🐋 سحب سيولة أسفل القاع ({lows_p[-2]['price']:.4f}) والارتداد أعلاه (Bullish Liquidity Sweep)")
-    if len(highs_p) >= 2 and float(sub["High"].tail(10).max()) > highs_p[-2]["price"] and curr_p < highs_p[-2]["price"]:
-        sweeps.append(f"⚠️ سحب سيولة أعلى القمة ({highs_p[-2]['price']:.4f}) والهبوط أسفلها (Bearish Liquidity Sweep)")
-
-    return {
-        "structure": structure_state, "badge_cls": badge_cls,
-        "fvgs": fvgs[-5:], "obs": obs[-5:], "sweeps": sweeps,
-        "swing_high": round(last_swing_high, 4) if last_swing_high else None,
-        "swing_low": round(last_swing_low, 4) if last_swing_low else None,
-    }
-
-def analyze_wyckoff_vsa(df: pd.DataFrame) -> dict:
-    sub = df.tail(100).copy()
-    sub["VolRatio"] = sub["Volume"] / sub["VolSMA20"].replace(0, np.nan)
-    curr = sub.iloc[-1]
-    c_p, ema50, ema200 = float(curr["Close"]), float(curr["EMA50"]), float(curr["EMA200"])
-    v_ratio = float(curr["VolRatio"]) if pd.notna(curr["VolRatio"]) else 1.0
-    rng = max(1e-6, float(curr["High"] - curr["Low"]))
-    clv = (c_p - float(curr["Low"])) / rng
-
-    box_high, box_low = float(sub["High"].tail(40).max()), float(sub["Low"].tail(40).min())
-    box_range_pct = ((box_high - box_low) / max(0.01, box_low)) * 100.0
-
-    if c_p > ema50 > ema200 and c_p >= box_high * 0.96:
-        phase, badge_cls = "🚀 مرحلة الانطلاق (Markup Phase)", "badge-bull"
-    elif c_p < ema50 < ema200 and c_p <= box_low * 1.04:
-        phase, badge_cls = "📉 مرحلة الهبوط (Markdown Phase)", "badge-bear"
-    elif box_range_pct <= 18.0 and c_p >= ema200 * 0.95:
-        phase, badge_cls = "🔋 نطاق تجميع مؤسسي (Accumulation)", "badge-bull"
-    else:
-        phase, badge_cls = "⚠️ نطاق تصريف / إعادة توازن (Distribution)", "badge-warn"
-
-    signals = []
-    for dt_idx, row in sub[sub["VolRatio"] >= 2.0].tail(5).iterrows():
-        kind = "🟢 شمعة حيتان شرائية (PVSRA)" if row["Close"] >= row["Open"] else "🔴 شمعة حيتان بيعية (PVSRA)"
-        signals.append({"التاريخ": str(dt_idx)[:10], "الإشارة": kind, "السعر": round(float(row["Close"]), 4), "نسبة الفوليوم": f"{row['VolRatio']:.1f}x"})
-
-    vsa_notes = []
-    if v_ratio >= 2.0 and clv >= 0.65:
-        vsa_notes.append("🟢 **ذروة امتصاص شرائي (Buying Absorption):** فوليوم مضاعف مع إغلاق في الثلث العلوي للشمعة.")
-    elif v_ratio >= 2.0 and clv <= 0.35:
-        vsa_notes.append("🔴 **ضغط بيعي كثيف (Selling Climax):** فوليوم مرتفع جداً مع إغلاق قرب القاع.")
-    elif v_ratio <= 0.65 and c_p < float(sub["Close"].iloc[-2]) and c_p > ema50:
-        vsa_notes.append("🎯 **جفاف العرض (No Supply):** تراجع سعري هادئ بأحجام تداول منخفضة جداً داخل اتجاه صاعد.")
-
-    prior_30_low = float(sub["Low"].iloc[-31:-3].min()) if len(sub) > 35 else box_low
-    if float(sub["Low"].tail(3).min()) < prior_30_low and c_p > prior_30_low:
-        vsa_notes.append(f"🐋 **نموذج Spring (كسر كاذب للقاع {prior_30_low:.4f}):** مصيدة دببة كلاسيكية لبدء موجة صعود.")
-
-    return {
-        "phase": phase, "badge_cls": badge_cls,
-        "box_high": round(box_high, 4), "box_low": round(box_low, 4),
-        "vol_ratio": round(v_ratio, 4),
-        "vsa_notes": vsa_notes or ["الحركة السعرية متوافقة مع متوسط أحجام التداول دون شذوذ VSA حاد."],
-        "whale_candles": signals
-    }
-
-def analyze_cpr_and_vp(df: pd.DataFrame) -> dict:
-    sub = df.tail(90).copy()
-    curr_p = float(sub["Close"].iloc[-1])
-    prev_m = df.iloc[-21:-1] if len(df) >= 22 else sub
-    h_m, l_m, c_m = float(prev_m["High"].max()), float(prev_m["Low"].min()), float(prev_m["Close"].iloc[-1])
-
-    pivot = (h_m + l_m + c_m) / 3.0
-    bc = (h_m + l_m) / 2.0
-    tc = (pivot - bc) + pivot
-    cpr_top, cpr_bot = max(tc, bc), min(tc, bc)
-    cpr_width_pct = ((cpr_top - cpr_bot) / max(0.01, pivot)) * 100.0
-    r1, s1 = (2 * pivot) - l_m, (2 * pivot) - h_m
-
-    p_min, p_max = float(sub["Low"].min()), float(sub["High"].max())
-    bins = np.linspace(p_min, max(p_min + 0.05, p_max), 25)
-    bin_centers = (bins[:-1] + bins[1:]) / 2.0
-    vol_hist = np.zeros(len(bin_centers))
-
-    for _, r in sub.iterrows():
-        idx = max(0, min(len(vol_hist) - 1, np.digitize(float(r["Close"]), bins) - 1))
-        vol_hist[idx] += float(r["Volume"])
-
-    poc_idx = int(np.argmax(vol_hist))
-    poc_price = float(bin_centers[poc_idx])
-    target_v, acc_v = float(vol_hist.sum()) * 0.70, float(vol_hist[poc_idx])
-    lo_i, hi_i = poc_idx, poc_idx
-    while acc_v < target_v and (lo_i > 0 or hi_i < len(vol_hist) - 1):
-        v_lo = vol_hist[lo_i - 1] if lo_i > 0 else -1
-        v_hi = vol_hist[hi_i + 1] if hi_i < len(vol_hist) - 1 else -1
-        if v_hi >= v_lo and hi_i < len(vol_hist) - 1:
-            hi_i += 1; acc_v += v_hi
-        elif lo_i > 0:
-            lo_i -= 1; acc_v += v_lo
-        else:
-            break
-
-    val_price, vah_price = float(bin_centers[lo_i]), float(bin_centers[hi_i])
-    if curr_p > cpr_top and curr_p > vah_price:
-        verdict, badge_cls = "🟢 اختراق منطقة القيمة وCPR (اتجاه صاعد)", "badge-bull"
-    elif curr_p < cpr_bot and curr_p < val_price:
-        verdict, badge_cls = "🔴 كسر منطقة القيمة وCPR (ضغط بيعي)", "badge-bear"
-    else:
-        verdict, badge_cls = "🟡 تداول داخل منطقة التوازن (Value Area)", "badge-warn"
-
-    return {
-        "pivot": round(pivot, 4), "tc": round(cpr_top, 4), "bc": round(cpr_bot, 4),
-        "r1": round(r1, 4), "s1": round(s1, 4), "cpr_width_pct": round(cpr_width_pct, 4),
-        "poc": round(poc_price, 4), "vah": round(vah_price, 4), "val": round(val_price, 4),
-        "bin_centers": bin_centers, "vol_hist": vol_hist,
-        "verdict": verdict, "badge_cls": badge_cls
-    }
-
-def analyze_harmonic_patterns(df: pd.DataFrame) -> dict:
-    sub = df.tail(160).copy()
-    pivs = extract_zigzag_pivots(sub, pct_thresh=0.045)
-    curr_p = float(sub["Close"].iloc[-1])
-
-    if len(pivs) < 5:
-        return {"detected": False, "pattern_name": "لا يوجد نموذج توافقي مكتمل", "badge_cls": "badge-warn", "points": [], "prz_low": None, "prz_high": None, "notes": "القمم والقيعان غير كافية لتكوين ضلع XABCD حالياً."}
-
-    X, A, B, C, D = pivs[-5], pivs[-4], pivs[-3], pivs[-2], pivs[-1]
-    xa, ab, bc, ad = abs(A["price"] - X["price"]), abs(B["price"] - A["price"]), abs(C["price"] - B["price"]), abs(D["price"] - X["price"])
-    if xa < 1e-6 or ab < 1e-6:
-        return {"detected": False, "pattern_name": "تذبذب ضعيف", "badge_cls": "badge-warn", "points": pivs[-5:], "prz_low": None, "prz_high": None, "notes": "مدى الحركة صغير جداً."}
-
-    ab_xa, bc_ab, ad_xa = ab / xa, bc / ab, ad / xa
-    is_bullish = X["type"] == "L" and A["type"] == "H" and D["type"] == "L"
-
-    pat, prz_ratio = "نموذج توافقي قيد التشكّل (Harmonic Setup)", 0.786
-    if 0.55 <= ab_xa <= 0.68 and 0.72 <= ad_xa <= 0.85:
-        pat, prz_ratio = "جارتلي (Gartley)", 0.786
-    elif 0.35 <= ab_xa <= 0.55 and 0.82 <= ad_xa <= 0.94:
-        pat, prz_ratio = "الخفاش (Bat)", 0.886
-    elif 0.72 <= ab_xa <= 0.85 and 1.15 <= ad_xa <= 1.35:
-        pat, prz_ratio = "الفراشة (Butterfly)", 1.272
-    elif 0.35 <= ab_xa <= 0.65 and 1.45 <= ad_xa <= 1.75:
-        pat, prz_ratio = "الكابوريا (Crab)", 1.618
-
-    if is_bullish:
-        prz_center = A["price"] - (xa * prz_ratio)
-        direction_txt, badge_cls = f"🟢 {pat} شرائي (Bullish)", "badge-bull"
-        target_1 = D["price"] + 0.382 * abs(A["price"] - D["price"])
-        target_2 = D["price"] + 0.618 * abs(A["price"] - D["price"])
-    else:
-        prz_center = A["price"] + (xa * prz_ratio)
-        direction_txt, badge_cls = f"🔴 {pat} بيعي (Bearish)", "badge-bear"
-        target_1 = D["price"] - 0.382 * abs(A["price"] - D["price"])
-        target_2 = D["price"] - 0.618 * abs(A["price"] - D["price"])
-
-    prz_low, prz_high = round(prz_center * 0.985, 4), round(prz_center * 1.015, 4)
-    return {
-        "detected": True, "pattern_name": direction_txt, "badge_cls": badge_cls,
-        "points": [X, A, B, C, D],
-        "prz_low": prz_low, "prz_high": prz_high,
-        "target_1": round(target_1, 4), "target_2": round(target_2, 4),
-        "notes": f"نسبة تصحيح B/XA = {ab_xa:.2f} | امتداد D/XA = {ad_xa:.2f}. منطقة الانعكاس المحتملة (PRZ) تقع بين {prz_low} و {prz_high} ج.م (السعر الحالي: {curr_p:.4f})."
-    }
-
-def analyze_elliott_waves(df: pd.DataFrame, pct_thresh: float = 0.05) -> dict:
-    pivs = extract_zigzag_pivots(df, pct_thresh=pct_thresh)
-    if len(pivs) < 6:
-        lo_p, hi_p = float(df["Low"].min()), float(df["High"].max())
-        return {
-            "wave_name": "🌊 موجة تأسيسية (1-2)", "badge_cls": "badge-warn",
-            "invalidation": round(lo_p, 4), "target_1": round(hi_p, 4), "target_2": round(hi_p * 1.12, 4),
-            "summary": "عدد القمم والقيعان في المدى المختار لا يزال في مراحل التأسيس الأولى.",
-            "labeled_pivots": pivs, "rules_check": []
-        }
-
-    recent6 = pivs[-6:]
-    labeled = [{**p, "label": lbl} for p, lbl in zip(recent6, ["(0)", "(1)", "(2)", "(3)", "(4)", "(5)"])]
-    p0, p1, p2, p3, p4, p5 = [x["price"] for x in labeled]
-    if p1 > p0 and p3 > p1:
-        w1, w3, w5 = abs(p1 - p0), abs(p3 - p2), abs(p5 - p4)
-        rules = [
-            ("عدم كسر الموجة (2) لقاع (0)", f"{p2:.4f} > {p0:.4f}", p2 > p0),
-            ("الموجة (3) ليست الأقصر", f"طولها {w3:.4f}", w3 >= min(w1, w5)),
-            ("عدم تداخل (4) مع قمة (1)", f"{p4:.4f} > {p1:.4f}", p4 > p1),
-        ]
-        inv = round(p4, 4)
-        return {
-            "wave_name": "🌊 موجة دافعة صاعدة (1-2-3-4-5)", "badge_cls": "badge-bull",
-            "invalidation": inv, "target_1": round(p5 + 0.618 * w1, 4), "target_2": round(p5 + 1.0 * w1, 4),
-            "summary": f"السهم يتحرك في هيكل موجي صاعد. الحفاظ على قاع الموجة الرابعة ({inv} ج.م) يبقي المستهدفات الصاعدة فعالة.",
-            "labeled_pivots": labeled, "rules_check": rules
-        }
-    else:
-        w_a, inv = abs(p3 - p2), round(p4, 4)
-        return {
-            "wave_name": "🌊 موجة تصحيحية هابطة (A-B-C)", "badge_cls": "badge-bear",
-            "invalidation": inv, "target_1": round(max(0.05, p5 - 0.618 * w_a), 4), "target_2": round(max(0.05, p5 - 1.0 * w_a), 4),
-            "summary": f"السهم في مسار تصحيحي؛ اختراق قمة التصحيح الفرعية ({inv} ج.م) يلغي السيناريو الهابط.",
-            "labeled_pivots": labeled, "rules_check": [("قمة B أقل من بداية التصحيح", f"{p4:.4f} < {p2:.4f}", p4 < p2)]
-        }
-
-ZODIAC_SIGNS_AR = ["♈ الحمل", "♉ الثور", "♊ الجوزاء", "♋ السرطان", "♌ الأسد", "♍ العذراء", "♎ الميزان", "♏ العقرب", "♐ القوس", "♑ الجدي", "♒ الدلو", "♓ الحوت"]
-ORBITAL_ELEMENTS = {
-    "Mercury": (0.38709927, 0.00000037, 0.20563593, 0.00001906, 7.00497902, -0.00594749, 252.25032350, 149472.67411175, 77.45779628, 0.16047689, 48.33076593, -0.12534081),
-    "Venus":   (0.72333566, 0.00000390, 0.00677672, -0.00004107, 3.39467605, -0.00078890, 181.97909950, 58517.81538729, 131.60246718, 0.00268329, 76.67984255, -0.27769418),
-    "Earth":   (1.00000261, 0.00000562, 0.01671123, -0.00004392, -0.00001531, -0.01294668, 100.46457166, 35999.37244981, 102.93768193, 0.32327364, 0.0, 0.0),
-    "Mars":    (1.52371034, 0.00001847, 0.09339410, 0.00007882, 1.84969142, -0.00813131, -4.55343205, 19140.30268499, -23.94362959, 0.44441088, 49.55953891, -0.29257343),
-    "Jupiter": (5.20288700, -0.00011607, 0.04838624, -0.00013253, 1.30439695, -0.00183714, 34.39644051, 3034.74612775, 14.72847983, 0.21252668, 100.47390909, 0.20469106),
-    "Saturn":  (9.53667594, -0.00125060, 0.05386179, -0.00050991, 2.48599187, 0.00193609, 49.95424423, 1222.49362201, 92.59887831, -0.41897216, 113.66242448, -0.28867794),
-}
-
-def _julian_centuries(dt: datetime) -> float:
-    return (dt.toordinal() + 1721424.5 + (dt.hour + dt.minute / 60.0) / 24.0 - 2451545.0) / 36525.0
-
-def _heliocentric_xyz(planet_name: str, T: float) -> tuple:
-    a0, da, e0, de, I0, dI, L0, dL, w0, dw, O0, dO = ORBITAL_ELEMENTS[planet_name]
-    a, e = a0 + da * T, e0 + de * T
-    I, L = math.radians(I0 + dI * T), (L0 + dL * T) % 360.0
-    w_bar = (w0 + dw * T) % 360.0
-    O = math.radians((O0 + dO * T) % 360.0)
-    w = math.radians((w_bar - math.degrees(O)) % 360.0)
-    M = math.radians((L - w_bar) % 360.0)
-    E = M + e * math.sin(M)
-    for _ in range(5):
-        E -= (E - e * math.sin(E) - M) / (1.0 - e * math.cos(E))
-    x_p, y_p = a * (math.cos(E) - e), a * math.sqrt(max(0.0, 1.0 - e * e)) * math.sin(E)
-    cos_O, sin_O, cos_w, sin_w, cos_I, sin_I = math.cos(O), math.sin(O), math.cos(w), math.sin(w), math.cos(I), math.sin(I)
-    return (
-        (cos_O * cos_w - sin_O * sin_w * cos_I) * x_p + (-cos_O * sin_w - sin_O * cos_w * cos_I) * y_p,
-        (sin_O * cos_w + cos_O * sin_w * cos_I) * x_p + (-sin_O * sin_w + cos_O * sin_w * cos_I) * y_p
-    )
-
-def get_planetary_longitudes(dt: datetime) -> dict:
-    T = _julian_centuries(dt)
-    xe, ye = _heliocentric_xyz("Earth", T)
-    sun_lon = math.degrees(math.atan2(-ye, -xe)) % 360.0
-    Lp = (218.3164477 + 481267.88123421 * T) % 360.0
-    D = math.radians((297.8501921 + 445267.1114034 * T) % 360.0)
-    Mp = math.radians((134.9633964 + 477198.8675055 * T) % 360.0)
-    moon_lon = (Lp + 6.289 * math.sin(Mp) + 1.274 * math.sin(2 * D - Mp) + 0.658 * math.sin(2 * D)) % 360.0
-    pos = {"☀️ الشمس": sun_lon, "🌙 القمر": moon_lon}
-    for p_en, p_ar in [("Mercury", "☿ عطارد"), ("Venus", "♀ الزهرة"), ("Mars", "♂ المريخ"), ("Jupiter", "♃ المشتري"), ("Saturn", "♄ زحل")]:
-        xp, yp = _heliocentric_xyz(p_en, T)
-        pos[p_ar] = math.degrees(math.atan2(yp - ye, xp - xe)) % 360.0
-    return pos
-
-def deg_to_zodiac(deg: float) -> str:
-    return f"{ZODIAC_SIGNS_AR[int(deg // 30) % 12]} ({deg % 30:.1f}°)"
-
-def convert_deg_to_price(deg: float, ref_price: float) -> float:
-    if ref_price <= 0:
-        return round(deg, 4)
-    scale = 1.0
-    while (360.0 / scale) > ref_price * 2.2:
-        scale *= 10.0
-    while (360.0 / scale) < ref_price * 0.25:
-        scale /= 10.0
-    step, base_val = 360.0 / scale, deg / scale
-    lvl = base_val + round((ref_price - base_val) / step) * step
-    return round(lvl + step if lvl <= 0 else lvl, 4)
-
-def add_egx_trading_days(start_dt: date, trading_days: int) -> date:
-    curr, added = start_dt, 0
-    while added < trading_days:
-        curr += timedelta(days=1)
-        if curr.weekday() in [6, 0, 1, 2, 3]:
-            added += 1
-    return curr
-
-def compute_gann_and_planetary(pivot_date: date, pivot_price: float, is_pivot_low: bool, current_price: float, use_trading_days: bool):
-    sqrt_p = math.sqrt(max(0.01, pivot_price))
-    sq9_prices = []
-    for ang in [45, 90, 135, 180, 270, 360]:
-        step = ang / 180.0
-        target_p = (sqrt_p + step) ** 2 if is_pivot_low else (max(0.1, sqrt_p - step)) ** 2
-        sq9_prices.append({
-            "الزاوية": f"{ang}°",
-            "المستوى السعري": round(target_p, 4),
-            "النوع": "مقاومة هندسية ⬆️" if is_pivot_low else "دعم هندسي ⬇️",
-            "البعد %": round(((target_p - current_price) / current_price) * 100, 1)
-        })
-
-    price_time_sq = max(15, int(round(sqrt_p * 10)))
-    today = get_cairo_now().date()
-    time_targets = []
-    for cyc in sorted(list(set([45, 60, 90, 120, 144, 180, 270, 360, price_time_sq]))):
-        target_dt = add_egx_trading_days(pivot_date, cyc) if use_trading_days else (pivot_date + timedelta(days=cyc))
-        diff_days = (target_dt - today).days
-        if -15 <= diff_days <= 120:
-            label = f"تربيع السعر ({cyc})" if cyc == price_time_sq else f"دورة جان ({cyc})"
-            status = "🔥 نافذة انعكاس نشطة الآن!" if abs(diff_days) <= 3 else (f"بعد {diff_days} يوم" if diff_days > 0 else f"مضى منذ {abs(diff_days)} يوم")
-            time_targets.append({"الدورة / المعادلة": label, "تاريخ الانعكاس المتوقع": target_dt, "الحالة الزمنية": status})
-
-    upcoming_aspects, seen = [], set()
-    for d_off in range(0, 31):
-        pos = get_planetary_longitudes(datetime.combine(today + timedelta(days=d_off), datetime.min.time()) + timedelta(hours=12))
-        for p1, p2 in [("☀️ الشمس", "🌙 القمر"), ("☀️ الشمس", "♂ المريخ"), ("☀️ الشمس", "♃ المشتري"), ("☀️ الشمس", "♄ زحل"), ("♂ المريخ", "♄ زحل")]:
-            diff_deg = abs(pos[p1] - pos[p2]) % 360.0
-            diff_deg = 360.0 - diff_deg if diff_deg > 180.0 else diff_deg
-            for t_ang, asp_name in [(0, "اقتران ☌ (0°)"), (90, "تربيع □ (90°)"), (120, "تثليث △ (120°)"), (180, "تقابل ☍ (180°)")]:
-                if abs(diff_deg - t_ang) <= 1.5 and f"{p1}-{p2}-{t_ang}" not in seen:
-                    seen.add(f"{p1}-{p2}-{t_ang}")
-                    upcoming_aspects.append({"التاريخ": today + timedelta(days=d_off), "الكوكبان": f"{p1} × {p2}", "الزاوية الفلكية": asp_name, "متبقي": "اليوم 🔴" if d_off == 0 else f"بعد {d_off} يوم"})
-
-    return sq9_prices, time_targets, upcoming_aspects
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_fundamental_analysis(ticker: str) -> dict:
@@ -2041,25 +1472,35 @@ def fetch_fundamental_analysis(ticker: str) -> dict:
         ta0, ta1 = gv(bs, ["Total Assets"], 0), gv(bs, ["Total Assets"], 1)
         ocf0 = gv(cf, ["Operating Cash Flow", "Total Cash From Operating Activities"], 0)
         ltd0, ltd1 = gv(bs, ["Long Term Debt", "Total Debt"], 0), gv(bs, ["Long Term Debt", "Total Debt"], 1)
+        if ltd0 is None and bs is not None and not bs.empty:
+            ltd0 = 0.0  # مفيش بند ديون في الميزانية = مفيش ديون
         ca0, cl0 = gv(bs, ["Current Assets", "Total Current Assets"], 0), gv(bs, ["Current Liabilities", "Total Current Liabilities"], 0)
         ca1, cl1 = gv(bs, ["Current Assets", "Total Current Assets"], 1), gv(bs, ["Current Liabilities", "Total Current Liabilities"], 1)
         rev0, rev1 = gv(fin, ["Total Revenue", "Operating Revenue"], 0), gv(fin, ["Total Revenue", "Operating Revenue"], 1)
         gp0, gp1 = gv(fin, ["Gross Profit"], 0), gv(fin, ["Gross Profit"], 1)
 
-        if ni0 is not None and ta0 and ta0 > 0:
-            tests += 1; ok = (ni0 / ta0) > 0; f_score += int(ok)
-            breakdown.append(("1. ربحية الأصول (ROA > 0)", f"{(ni0/ta0)*100:.1f}%", ok))
+        ta2 = gv(bs, ["Total Assets"], 2)
+        sh0 = gv(bs, ["Ordinary Shares Number", "Share Issued"], 0)
+        sh1 = gv(bs, ["Ordinary Shares Number", "Share Issued"], 1)
+        # V11.5: ROA على أصول أول السنة (Piotroski الأصلي)، ولو مش متاحة نرجع لأصول آخر السنة
+        roa_base0 = ta1 if ta1 else ta0
+        roa_base1 = ta2 if ta2 else ta1
+        if ni0 is not None and roa_base0 and roa_base0 > 0:
+            tests += 1; ok = (ni0 / roa_base0) > 0; f_score += int(ok)
+            breakdown.append(("1. ربحية الأصول (ROA > 0)", f"{(ni0/roa_base0)*100:.1f}%", ok))
         if ocf0 is not None:
             tests += 1; ok = ocf0 > 0; f_score += int(ok)
             breakdown.append(("2. التدفق النقدي التشغيلي > 0", f"{ocf0/1e6:,.1f}M", ok))
-        if all(v is not None and v != 0 for v in [ni0, ni1, ta0, ta1]):
-            tests += 1; ok = (ni0 / ta0) > (ni1 / ta1); f_score += int(ok)
-            breakdown.append(("3. نمو العائد على الأصول", f"{((ni0/ta0)-(ni1/ta1))*100:+.1f}%", ok))
+        if all(v is not None and v != 0 for v in [ni0, ni1, roa_base0, roa_base1]):
+            tests += 1; ok = (ni0 / roa_base0) > (ni1 / roa_base1); f_score += int(ok)
+            breakdown.append(("3. نمو العائد على الأصول", f"{((ni0/roa_base0)-(ni1/roa_base1))*100:+.1f}%", ok))
         if ocf0 is not None and ni0 is not None:
             tests += 1; ok = ocf0 > ni0; f_score += int(ok)
             breakdown.append(("4. جودة الأرباح (OCF > Net Income)", "نقدي" if ok else "دفتري", ok))
-        if all(v is not None and v > 0 for v in [ltd0, ltd1, ta0, ta1]):
-            tests += 1; ok = (ltd0 / ta0) <= (ltd1 / ta1); f_score += int(ok)
+        if all(v is not None and v > 0 for v in [ta0, ta1]) and ltd0 is not None:
+            # V11.5: شركة بدون ديون بتنجح في الاختبار (كانت بتتشال من الحساب)
+            _l1 = (ltd1 or 0.0) / ta1
+            tests += 1; ok = (ltd0 / ta0) <= _l1; f_score += int(ok)
             breakdown.append(("5. انخفاض الرفع المالي", f"{(ltd0/ta0)*100:.1f}%", ok))
         if all(v is not None and v > 0 for v in [ca0, cl0, ca1, cl1]):
             tests += 1; ok = (ca0 / cl0) > (ca1 / cl1); f_score += int(ok)
@@ -2070,6 +1511,10 @@ def fetch_fundamental_analysis(ticker: str) -> dict:
         if all(v is not None and v > 0 for v in [rev0, ta0, rev1, ta1]):
             tests += 1; ok = (rev0 / ta0) > (rev1 / ta1); f_score += int(ok)
             breakdown.append(("8. كفاءة دوران الأصول", f"{rev0/ta0:.2f}x", ok))
+        if sh0 and sh1:
+            # V11.5: الاختبار التاسع — مفيش إصدار أسهم جديدة (تخفيف)
+            tests += 1; ok = sh0 <= sh1 * 1.001; f_score += int(ok)
+            breakdown.append(("9. عدم إصدار أسهم جديدة", f"{(sh0/sh1-1)*100:+.1f}%", ok))
 
         # تقويم الأرباح والكوبونات (V11.4)
         cal_info = {}
@@ -2093,7 +1538,10 @@ def fetch_fundamental_analysis(ticker: str) -> dict:
             "sector": info.get("sector", "غير محدد"),
             "industry": info.get("industry", "غير محدد"),
             "pe": info.get("trailingPE"), "pb": info.get("priceToBook"),
-            "roe": info.get("returnOnEquity"), "div_yield": info.get("dividendYield"),
+            "roe": info.get("returnOnEquity"),
+            # V11.5: Yahoo بيرجع dividendYield أحياناً كنسبة مئوية جاهزة؛ نحسبه بنفسنا
+            "div_yield": ((info.get("dividendRate") / (info.get("currentPrice") or info.get("regularMarketPrice")))
+                          if info.get("dividendRate") and (info.get("currentPrice") or info.get("regularMarketPrice")) else None),
             "market_cap": info.get("marketCap"),
             "f_score": f_score, "tests_available": tests, "breakdown": breakdown,
             "calendar": cal_info,
@@ -2104,14 +1552,17 @@ def fetch_fundamental_analysis(ticker: str) -> dict:
     except Exception as e:
         return {"error": str(e)}
 
-POS_WORDS = ["أرباح", "نمو", "توزيعات", "كوبون", "استحواذ", "ارتفاع", "قفزة", "توسعات", "عقد", "صفقة", "profit", "growth", "dividend", "surge"]
-NEG_WORDS = ["خسائر", "تراجع", "هبوط", "إيقاف", "شطب", "غرامة", "مديونية", "عجز", "انخفاض", "loss", "decline", "drop", "suspend", "fine"]
+# V11.5: "أرباح" لوحدها بتطلع في "تراجع الأرباح" فاتشالت؛ والعبارات السلبية بتتفحص الأول
+POS_WORDS = ["نمو الأرباح", "ارتفاع الأرباح", "قفزة", "توزيعات", "كوبون", "استحواذ", "ارتفاع", "توسعات", "عقد جديد", "ترسية", "زيادة رأس المال بالمنحة", "أسهم مجانية", "profit rises", "growth", "dividend", "surge"]
+NEG_WORDS = ["خسائر", "تراجع", "هبوط", "إيقاف", "شطب", "غرامة", "مديونية", "عجز", "انخفاض", "تحقيق", "دعوى", "loss", "decline", "drop", "suspend", "fine"]
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def fetch_stock_news(symbol_clean: str) -> list:
+def fetch_stock_news(symbol_clean: str, company_name: str = "") -> list:
     news_list = []
     try:
-        query = urllib.parse.quote(f"{symbol_clean} البورصة المصرية")
+        # V11.5: الأخبار العربي بتذكر اسم الشركة مش الرمز
+        _q = f'"{company_name}" OR {symbol_clean} البورصة' if company_name else f"{symbol_clean} البورصة المصرية"
+        query = urllib.parse.quote(_q)
         rss_url = f"https://news.google.com/rss/search?q={query}&hl=ar&gl=EG&ceid=EG:ar"
         req = urllib.request.Request(rss_url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=6) as resp:
@@ -2152,9 +1603,9 @@ if not is_authenticated():
         ap = st.text_input('Password:', type='password', key='auth_pass_in')
         c1, c2 = st.columns(2)
         with c1:
-            do_login = st.form_submit_button('Login', use_container_width=True)
+            do_login = st.form_submit_button('Login', width="stretch")
         with c2:
-            do_signup = st.form_submit_button('Sign up', use_container_width=True)
+            do_signup = st.form_submit_button('Sign up', width="stretch")
     if do_login:
         ok, msg = sb_login(ae, ap)
         if ok:
@@ -2252,7 +1703,7 @@ with top_bar1:
 with top_bar2:
     live_auto = st.checkbox("⚡ تحديث تلقائي (5 دقائق)", value=False)
 with top_bar3:
-    if st.button("🔄 تحديث الأسعار والسحابة الآن", use_container_width=True):
+    if st.button("🔄 تحديث الأسعار والسحابة الآن", width="stretch"):
         st.session_state["refresh_nonce"] = refresh_nonce + 1
         st.session_state["force_cloud_sync"] = True
         fetch_full_egx_tv_scanner.clear()
@@ -2555,8 +2006,8 @@ with tab_radar:
                     _agg = _agg.sort_values("avg_change", ascending=False)
                     _fig_sec = _px.bar(_agg, x="sector", y="avg_change", color="avg_score", color_continuous_scale="RdYlGn", title="Sector Rotation (avg change %, color=avg score)", text="count")
                     _fig_sec.update_layout(height=360, template=TPL, paper_bgcolor="#FFFFFF", plot_bgcolor="#F8FAFC", margin=dict(l=10,r=10,t=40,b=10))
-                    st.plotly_chart(_fig_sec, use_container_width=True)
-                    st.dataframe(_agg, use_container_width=True, hide_index=True)
+                    st.plotly_chart(_fig_sec, width="stretch")
+                    st.dataframe(_agg, width="stretch", hide_index=True)
                 else:
                     st.info("لا توجد بيانات.")
             except Exception as _e:
@@ -2578,7 +2029,7 @@ with tab_radar:
 
         st.dataframe(
             df_rad[["الرمز", "اسم الشركة", "السكور", "الرأي اللحظي", "نوع الإشارة", "الإغلاق", "التغير %", "الفوليوم", "فرق VWAP %", "السيولة (مليون)", "الوقف (2xATR)", "TP1", "TP2", "الأسهم", "صافي TP1", "توفر البيانات", "الأفق الزمني", "TradingView"]],
-            use_container_width=True, hide_index=True, height=400,
+            width="stretch", hide_index=True, height=400,
             column_config={
                 "TradingView": st.column_config.LinkColumn("شارت TV", display_text="فتح ↗"),
                 "السكور": st.column_config.ProgressColumn("السكور", min_value=0, max_value=100, format="%d"),
@@ -2619,7 +2070,7 @@ with tab_portfolio:
                 title="خريطة حرارة المحفظة (حجم = كمية، لون = العائد %)",
             )
             _fig_tm.update_layout(height=360, template=TPL, paper_bgcolor="#FFFFFF", margin=dict(l=10,r=10,t=40,b=10))
-            st.plotly_chart(_fig_tm, use_container_width=True)
+            st.plotly_chart(_fig_tm, width="stretch")
         except Exception as _e:
             st.caption("تعذر رسم الخريطة: %s" % _e)
 
@@ -2635,8 +2086,8 @@ with tab_portfolio:
                 import plotly.express as _px
                 _fig_attr = _px.bar(_adf, x='الرمز', y='contribution', color='weight_pct', color_continuous_scale='RdYlGn', title='P&L Contribution by Stock (color=portfolio weight %)')
                 _fig_attr.update_layout(height=360, template=TPL, paper_bgcolor='#FFFFFF', plot_bgcolor='#F8FAFC', margin=dict(l=10,r=10,t=40,b=10))
-                st.plotly_chart(_fig_attr, use_container_width=True)
-                st.dataframe(_adf[['الرمز', 'اسم الشركة', 'الكمية', 'السعر الحالي', 'صافي الربح/الخسارة', 'العائد %', 'weight_pct']], use_container_width=True, hide_index=True)
+                st.plotly_chart(_fig_attr, width="stretch")
+                st.dataframe(_adf[['الرمز', 'اسم الشركة', 'الكمية', 'السعر الحالي', 'صافي الربح/الخسارة', 'العائد %', 'weight_pct']], width="stretch", hide_index=True)
             except Exception as _e:
                 st.caption('Attribution error: %s' % _e)
     st.write('')
@@ -2651,7 +2102,7 @@ with tab_portfolio:
         if not portfolio_rows:
             st.info("📌 محفظتك فارغة حالياً؛ انتقل إلى تبويب **➕ إضافة سهم / استيراد فواتير ثاندر** لإضافة أسهمك يدوياً أو برفع فواتير ثاندر.")
         else:
-            if st.button("📲 إرسال تقرير محفظتي اللحظي إلى تليجرام", use_container_width=True):
+            if st.button("📲 إرسال تقرير محفظتي اللحظي إلى تليجرام", width="stretch"):
                 if not tg_token or not tg_chat_id:
                     st.warning("⚠️ اربط التليجرام أولاً من تبويب **⚙️ الإعدادات**.")
                 else:
@@ -2663,7 +2114,7 @@ with tab_portfolio:
 
             st.dataframe(
                 pd.DataFrame(portfolio_rows)[["الرمز", "اسم الشركة", "الرأي اللحظي", "حالة التنبيه", "الوقف المتحرك", "السكور الفني", "الكمية", "متوسط الشراء", "السعر الحالي", "صافي الربح/الخسارة", "العائد %", "وقف الخسارة", "بُعد الوقف %", "TP1", "TP2", "توفر البيانات", "الأفق الزمني", "TradingView"]],
-                use_container_width=True, hide_index=True,
+                width="stretch", hide_index=True,
                 column_config={
                     "TradingView": st.column_config.LinkColumn("شارت TV", display_text="فتح ↗"),
                     "السكور الفني": st.column_config.ProgressColumn("السكور", min_value=0, max_value=100, format="%d"),
@@ -2682,7 +2133,7 @@ with tab_portfolio:
 
             with ps2:
                 st.write(""); st.write("")
-                if st.button(f"🛡️ تأمين {port_sel} للتعادل", use_container_width=True):
+                if st.button(f"🛡️ تأمين {port_sel} للتعادل", width="stretch"):
                     be_val = round(p_item["متوسط الشراء"] * (1.0 + fee_rate * 2.0), 4)
                     if p_item["السعر الحالي"] <= be_val:
                         st.warning(f"⚠️ السعر الحالي ({p_item['السعر الحالي']}) أقل من أو يساوي نقطة التعادل ({be_val}).")
@@ -2697,7 +2148,7 @@ with tab_portfolio:
 
             with ps3:
                 st.write(""); st.write("")
-                if st.button(f"🗑️ حذف {port_sel}", use_container_width=True):
+                if st.button(f"🗑️ حذف {port_sel}", width="stretch"):
                     _, d_st = delete_portfolio_item(port_sel)
                     st.session_state["last_port_msg"] = f"🗑️ تم حذف {port_sel} ({d_st})."
                     st.rerun()
@@ -2707,7 +2158,7 @@ with tab_portfolio:
                 exit_p = st.number_input(f"💵 سعر البيع الفعلي لإغلاق {port_sel} (ج.م):", min_value=0.01, value=float(p_item["السعر الحالي"]), step=0.05)
             with clc2:
                 st.write(""); st.write("")
-                if st.button(f"💰 إغلاق صفقة {port_sel} وتسجيلها في دفتر الصفقات", type="primary", use_container_width=True):
+                if st.button(f"💰 إغلاق صفقة {port_sel} وتسجيلها في دفتر الصفقات", type="primary", width="stretch"):
                     n_res, p_res = record_closed_trade(port_sel, p_item["الكمية"], p_item["متوسط الشراء"], exit_p, fee_rate)
                     st.session_state["last_port_msg"] = f"✅ تم إغلاق صفقة {port_sel} ({p_item['اسم الشركة']}) بصافي {n_res:+,.0f} ج.م ({p_res:+.1f}%)!"
                     st.rerun()
@@ -2721,7 +2172,7 @@ with tab_portfolio:
                 fig_p.add_hline(y=p_item["TP1"], line_dash="dash", line_color="#4ADE80", annotation_text=f"TP1: {p_item['TP1']}")
                 fig_p.add_hline(y=p_item["TP2"], line_dash="dash", line_color="#10B981", annotation_text=f"TP2: {p_item['TP2']}")
                 fig_p.update_layout(title=f"📊 مستويات مركزك في {port_sel} ({p_item['اسم الشركة']})", height=420, xaxis_rangeslider_visible=False, template=TPL, paper_bgcolor="#FFFFFF", plot_bgcolor="#F8FAFC", margin=dict(l=10, r=10, t=40, b=10))
-                st.plotly_chart(fig_p, use_container_width=True)
+                st.plotly_chart(fig_p, width="stretch")
 
     # --- فرعي 2.2: إضافة سهم جديد + استيراد مستندات ثاندر ---
     with ptab_add:
@@ -2777,7 +2228,7 @@ with tab_portfolio:
 
         in_trailing = st.checkbox("🛡️ تفعيل الوقف المتحرك الآلي (تأمين التعادل عند TP1 وملاحقة الربح بعد TP2)", value=True)
 
-        if st.button("💾 حفظ السهم في محفظتي وتفعيل الحماية", type="primary", use_container_width=True):
+        if st.button("💾 حفظ السهم في محفظتي وتفعيل الحماية", type="primary", width="stretch"):
             if not clean_in:
                 st.error("⚠️ اكتب رمز السهم أولاً (مثل ABUK أو COMI).")
             else:
@@ -2805,10 +2256,10 @@ with tab_portfolio:
                 st.warning("⚠️ لم يتم التعرف على بنود الصفقة تلقائياً داخل الملف؛ تأكد أنه فاتورة تنفيذ أو كشف حساب ثاندر.")
             else:
                 st.info(f"✅ تم استخراج **{len(parsed_ops)}** عملية من مستندات ثاندر — راجع الجدول أو عدّل أي رقم قبل الاعتماد:")
-                edited_ops = st.data_editor(pd.DataFrame(parsed_ops), use_container_width=True, hide_index=True, num_rows="dynamic")
+                edited_ops = st.data_editor(pd.DataFrame(parsed_ops), width="stretch", hide_index=True, num_rows="dynamic")
                 if (edited_ops["الكمية"] <= 0).any():
                     st.warning("⚠️ فيه عمليات الكمية بتاعتها 0 (الملف ماكانش فيه كمية واضحة). اكتب الكمية الصحيحة، وإلا السطر هيتجاهل.")
-                if st.button("🚀 اعتماد العمليات وتحديث المحفظة والسحابة فوراً", type="primary", use_container_width=True):
+                if st.button("🚀 اعتماد العمليات وتحديث المحفظة والسحابة فوراً", type="primary", width="stretch"):
                     applied_cnt = 0
                     for _, op in edited_ops.iterrows():
                         sym_o = str(op.get("الرمز", "")).upper().replace(".CA", "").strip()
@@ -2923,13 +2374,13 @@ with tab_portfolio:
                 import plotly.graph_objects as _go
                 _fig_cum = _go.Figure(_go.Scatter(y=_cum_series, mode="lines+markers", line=dict(color="#0284C7", width=2.5), fill="tozeroy", fillcolor="rgba(2,132,199,0.12)"))
                 _fig_cum.update_layout(title="📈 منحنى الأرباح التراكمية (Equity Curve)", height=320, template=TPL, paper_bgcolor="#FFFFFF", plot_bgcolor="#F8FAFC", margin=dict(l=10,r=10,t=40,b=10))
-                st.plotly_chart(_fig_cum, use_container_width=True)
+                st.plotly_chart(_fig_cum, width="stretch")
             st.write("")
 
             st.dataframe(pd.DataFrame([
                 {"الرمز": t.get("symbol"), "اسم الشركة": get_friendly_stock_name(t.get("symbol", "")), "الكمية": t.get("shares"), "سعر الشراء": t.get("buy_price"), "سعر البيع": t.get("sell_price"), "صافي الربح/الخسارة": t.get("net_pnl"), "العائد %": t.get("pnl_pct"), "التاريخ": str(t.get("closed_at", ""))[:16].replace("T", " ")}
                 for t in closed_trades
-            ]), use_container_width=True, hide_index=True)
+            ]), width="stretch", hide_index=True)
 
         st.divider()
         st.markdown("#### 💾 النسخ الاحتياطي والاستعادة + تصدير Excel")
@@ -2940,7 +2391,7 @@ with tab_portfolio:
                 data=json.dumps(my_portfolio, ensure_ascii=False, indent=2),
                 file_name=f"egx_portfolio_{today_str}.json",
                 mime="application/json",
-                use_container_width=True
+                width="stretch"
             )
         with b2:
             # Excel export: portfolio + closed trades + radar
@@ -2960,7 +2411,7 @@ with tab_portfolio:
                     data=_buf.getvalue(),
                     file_name=f"egx_report_{today_str}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
+                    width="stretch"
                 )
             except Exception as _e:
                 st.caption(f"⚠️ Excel غير متاح: {_e}")
@@ -3001,25 +2452,7 @@ with tab_lab:
         with st.spinner("جاري تحميل البيانات التاريخية..."):
             _lab_df = fetch_single_stock_history(selected_data["Ticker"])
 
-        mtf_txt = "⚪ لا بيانات تاريخية (Yahoo)"
-        try:
-            _df_mtf = _lab_df
-            if not _df_mtf.empty and len(_df_mtf) >= 40:
-                _w = _df_mtf.resample("W").agg({"Open":"first","High":"max","Low":"min","Close":"last","Volume":"sum"}).dropna()
-                if len(_w) >= 8:
-                    _w["EMA20w"] = _w["Close"].ewm(span=20, adjust=False).mean()
-                    _last = float(_w["Close"].iloc[-1])
-                    _ema = float(_w["EMA20w"].iloc[-1])
-                    _prev = float(_w["Close"].iloc[-2])
-                    if _last > _ema and _last > _prev:
-                        mtf_txt = "🟢 صاعد (أسبوعي)"
-                    elif _last < _ema and _last < _prev:
-                        mtf_txt = "🔴 هابط (أسبوعي)"
-                    else:
-                        mtf_txt = "🟡 محايد (أسبوعي)"
-        except Exception:
-            pass
-
+        mtf_txt = schools.weekly_trend(_lab_df)  # V11.5: أسبوع البورصة بيقفل الخميس
 
         st.markdown(f"""
         <div class="stock-header-strip">
@@ -3027,7 +2460,7 @@ with tab_lab:
                 <span class="txt-cyan" style="font-size:22px;font-weight:900;">{selected_symbol}</span>
                 <span class="txt-gold" style="font-size:17px;font-weight:800;margin-right:10px;">{selected_data['اسم الشركة']}</span>
                 <div style="font-size:13px;color:#94A3B8;margin-top:3px;">{selected_data['التشخيص الفني']}</div>
-                <div style="font-size:11px;color:#B91C1C;margin-top:2px;">{("📡 <b>Live only</b> (TradingView) — التحليل التاريخي (SMC/Wyckoff/...) غير متوفر. استخدم التدفق اللحظي للقرار." if not fetch_single_stock_history(selected_data["Ticker"]).shape[0] else "📊 <b>Live + History</b> (TradingView + Yahoo) — التحليل التاريخي متاح.")}</div>
+                <div style="font-size:11px;color:#B91C1C;margin-top:2px;">{("📡 <b>Live only</b> (TradingView) — التحليل التاريخي (SMC/Wyckoff/...) غير متوفر. استخدم التدفق اللحظي للقرار." if not _lab_df.shape[0] else "📊 <b>Live + History</b> (TradingView + Yahoo) — التحليل التاريخي متاح.")}</div>
                 <div style="font-size:11px;color:#64748B;margin-top:2px;">📡 التدفق اللحظي: TradingView (100% EGX) | 📊 التاريخي: Yahoo Finance (محدود)</div>
                 <div style="font-size:12px;margin-top:4px;"><b>MTF:</b> {mtf_txt}</div>
             </div>
@@ -3040,7 +2473,8 @@ with tab_lab:
         </div>
         """, unsafe_allow_html=True)
 
-        t_flow, t_smc, t_wyk, t_cpr, t_candle, t_sr, t_tech, t_fund, t_gann, t_news, t_bt, t_upload = st.tabs([
+        t_conf, t_flow, t_smc, t_wyk, t_cpr, t_candle, t_sr, t_tech, t_fund, t_gann, t_exp, t_news, t_bt, t_upload = st.tabs([
+            "🧭 الإجماع",
             "⚡ تدفق",
             "🏦 SMC",
             "🐋 وايكوف",
@@ -3050,10 +2484,27 @@ with tab_lab:
             "📈 شارت",
             "📊 مالي",
             "🪐 جان (مبسط)",
+            "🔬 تجريبي",
             "📰 أخبار",
             "🧪 Backtest",
             "📥 رفع بيانات"
-        ])
+        ], key="lab_tabs", on_change="rerun")  # V11.5: التبويبات التقيلة (مالي/أخبار) بتتحمل لما تفتحها بس
+
+        # 0) ملخص الإجماع بين المدارس (V11.5)
+        with t_conf:
+            st.markdown("#### 🧭 إجماع المدارس — مين متفق ومين مختلف؟")
+            if _lab_df.empty or len(_lab_df) < 60:
+                st.info("ℹ️ البيانات التاريخية غير كافية لحساب الإجماع. استخدم تبويب ⚡ تدفق.")
+            else:
+                conf = schools.confluence_summary(_lab_df, selected_data)
+                cc1, cc2 = st.columns([1, 2])
+                cc1.markdown(f'<div class="kpi-card"><div class="kpi-label">درجة الإجماع (−100 → +100)</div><div class="kpi-val {"txt-green" if conf["score"]>=40 else ("txt-red" if conf["score"]<=-40 else "txt-gold")}">{conf["score"]:+d}</div><div style="font-size:13px;margin-top:4px;">{conf["label"]}</div></div>', unsafe_allow_html=True)
+                with cc2:
+                    st.dataframe(pd.DataFrame(conf["rows"]), width="stretch", hide_index=True)
+                st.caption(f"متوسط قيمة التداول اليومي (20 جلسة): {conf['adv']/1e6:,.2f} مليون ج.م — "
+                           "الأوزان حسب قوة الأدلة: الاتجاه والسيولة أعلى، الشموع أقل، وجان/هارمونيك/إليوت مالهمش وزن.")
+                if conf["liquidity_warning"]:
+                    st.warning(conf["liquidity_warning"])
 
         # 1) التدفق اللحظي وعمق السيولة الأوتوماتيكي 100%
         with t_flow:
@@ -3144,7 +2595,7 @@ with tab_lab:
                         col_o = "#4ADE80" if "طلب" in ob["النوع"] else "#F87171"
                         fig_smc.add_hrect(y0=ob["من"], y1=ob["إلى"], line_dash="dot", line_color=col_o, fillcolor="rgba(56,189,248,0.08)", annotation_text="OB", annotation_font_size=10)
                     fig_smc.update_layout(title=f"🏦 مناطق Order Blocks و FVG لسهم {selected_symbol}", height=500, xaxis_rangeslider_visible=False, template=TPL, paper_bgcolor="#FFFFFF", plot_bgcolor="#F8FAFC", margin=dict(l=10, r=10, t=40, b=10))
-                    st.plotly_chart(fig_smc, use_container_width=True)
+                    st.plotly_chart(fig_smc, width="stretch")
                 with c2:
                     sweeps_html = "".join([f"<li>{s}</li>" for s in smc["sweeps"]]) if smc["sweeps"] else "<li>لا يوجد سحب سيولة حاد في آخر 10 جلسات.</li>"
                     st.markdown(f"""
@@ -3159,10 +2610,10 @@ with tab_lab:
                     """, unsafe_allow_html=True)
                     if smc["obs"]:
                         st.markdown("##### 🧱 كتل الأوامر (Order Blocks)")
-                        st.dataframe(pd.DataFrame(smc["obs"]), use_container_width=True, hide_index=True)
+                        st.dataframe(pd.DataFrame(smc["obs"]), width="stretch", hide_index=True)
                     if smc["fvgs"]:
                         st.markdown("##### 🕳️ فجوات القيمة العادلة (FVG)")
-                        st.dataframe(pd.DataFrame(smc["fvgs"]), use_container_width=True, hide_index=True)
+                        st.dataframe(pd.DataFrame(smc["fvgs"]), width="stretch", hide_index=True)
 
         # 3) وايكوف و PVSRA
         with t_wyk:
@@ -3188,7 +2639,7 @@ with tab_lab:
                     fig_w.add_trace(go.Bar(x=sub_w.index, y=sub_w["Volume"], marker_color=v_cols, name="PVSRA Volume"), row=2, col=1)
                     fig_w.add_trace(go.Scatter(x=sub_w.index, y=sub_w["VolSMA20"], line=dict(color="#FACC15", width=1.4), name="متوسط 20"), row=2, col=1)
                     fig_w.update_layout(title=f"🐋 بصمة الحيتان PVSRA ونطاق وايكوف: {selected_symbol}", height=500, xaxis_rangeslider_visible=False, template=TPL, paper_bgcolor="#FFFFFF", plot_bgcolor="#F8FAFC", margin=dict(l=10, r=10, t=40, b=10))
-                    st.plotly_chart(fig_w, use_container_width=True)
+                    st.plotly_chart(fig_w, width="stretch")
                 with c2:
                     notes_html = "".join([f"<li style='margin-bottom:6px;'>{n}</li>" for n in wyk["vsa_notes"]])
                     st.markdown(f"""
@@ -3203,7 +2654,7 @@ with tab_lab:
                     """, unsafe_allow_html=True)
                     if wyk["whale_candles"]:
                         st.markdown("##### 🐋 أحدث شموع الحيتان (PVSRA ≥ 2.0x)")
-                        st.dataframe(pd.DataFrame(wyk["whale_candles"]), use_container_width=True, hide_index=True)
+                        st.dataframe(pd.DataFrame(wyk["whale_candles"]), width="stretch", hide_index=True)
 
         # 4) CPR وبروفايل السيولة
         with t_cpr:
@@ -3224,7 +2675,7 @@ with tab_lab:
                     vp_colors = ["#FACC15" if round(p, 4) == cvp["poc"] else "#38BDF8" for p in cvp["bin_centers"]]
                     fig_vp.add_trace(go.Bar(y=cvp["bin_centers"], x=cvp["vol_hist"], orientation="h", marker_color=vp_colors, name="Volume Profile"), row=1, col=2)
                     fig_vp.update_layout(title=f"🎯 خريطة CPR وبروفايل السيولة الأفقي: {selected_symbol}", height=510, xaxis_rangeslider_visible=False, template=TPL, paper_bgcolor="#FFFFFF", plot_bgcolor="#F8FAFC", showlegend=False, margin=dict(l=10, r=10, t=40, b=10))
-                    st.plotly_chart(fig_vp, use_container_width=True)
+                    st.plotly_chart(fig_vp, width="stretch")
                 with c2:
                     st.markdown(f"""
                     <div class="pro-card">
@@ -3249,7 +2700,7 @@ with tab_lab:
                 cp = analyze_candlestick_patterns(_lab_df)
                 st.markdown("**Verdict:** %s" % cp["verdict"])
                 if cp["patterns"]:
-                    st.dataframe(pd.DataFrame(cp["patterns"]), use_container_width=True, hide_index=True)
+                    st.dataframe(pd.DataFrame(cp["patterns"]), width="stretch", hide_index=True)
                 else:
                     st.info(cp["verdict"])
                 # Show last 5 candles
@@ -3257,7 +2708,7 @@ with tab_lab:
                 import plotly.graph_objects as _go
                 fig_c = _go.Figure(_go.Candlestick(x=sub_c.index, open=sub_c["Open"], high=sub_c["High"], low=sub_c["Low"], close=sub_c["Close"], name="السعر"))
                 fig_c.update_layout(title="Last 10 Candles", height=320, template=TPL, paper_bgcolor="#FFFFFF", plot_bgcolor="#F8FAFC", xaxis_rangeslider_visible=False, margin=dict(l=10,r=10,t=40,b=10))
-                st.plotly_chart(fig_c, use_container_width=True)
+                st.plotly_chart(fig_c, width="stretch")
 
         with t_sr:
             st.markdown("#### 📏 دعم/مقاومة (Support/Resistance) — V11.4")
@@ -3267,7 +2718,7 @@ with tab_lab:
                 sr = analyze_support_resistance(_lab_df)
                 st.markdown("**Verdict:** %s" % sr["verdict"])
                 if sr["levels"]:
-                    st.dataframe(pd.DataFrame(sr["levels"]), use_container_width=True, hide_index=True)
+                    st.dataframe(pd.DataFrame(sr["levels"]), width="stretch", hide_index=True)
                 if sr["nearest_support"]:
                     st.success("🟢 أقرب دعم: %s" % sr["nearest_support"])
                 if sr["nearest_resistance"]:
@@ -3281,7 +2732,7 @@ with tab_lab:
                 if sr["nearest_resistance"]:
                     fig_sr.add_hline(y=sr["nearest_resistance"], line_dash="dash", line_color="#EF4444", annotation_text="Resistance")
                 fig_sr.update_layout(title="Support/Resistance Levels", height=400, template=TPL, paper_bgcolor="#FFFFFF", plot_bgcolor="#F8FAFC", xaxis_rangeslider_visible=False, margin=dict(l=10,r=10,t=40,b=10))
-                st.plotly_chart(fig_sr, use_container_width=True)
+                st.plotly_chart(fig_sr, width="stretch")
 
         with t_tech:
             df_h = fetch_single_stock_history(selected_data["Ticker"])
@@ -3289,7 +2740,7 @@ with tab_lab:
             with c1:
                 if df_h.empty:
                     st.info(f"ℹ️ السعر اللحظي الحالي: **{selected_data['الإغلاق']} ج.م**")
-                    st.link_button(f"🚀 افتح {selected_symbol} على TradingView ↗", selected_data["TradingView"], use_container_width=True)
+                    st.link_button(f"🚀 افتح {selected_symbol} على TradingView ↗", selected_data["TradingView"], width="stretch")
                 else:
                     sub_f = df_h.tail(120)
                     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.04, row_heights=[0.74, 0.26])
@@ -3301,7 +2752,7 @@ with tab_lab:
                     fig.add_hline(y=selected_data["TP1"], line_dash="dash", line_color="#4ADE80", annotation_text="TP1", row=1, col=1)
                     fig.add_trace(go.Bar(x=sub_f.index, y=sub_f["Volume"], marker_color=["#4ADE80" if c >= o else "#F87171" for c, o in zip(sub_f["Close"], sub_f["Open"])], name="الفوليوم"), row=2, col=1)
                     fig.update_layout(title=f"📈 الشارت الفني ومستويات التنفيذ: {selected_symbol} ({selected_data['اسم الشركة']})", height=520, xaxis_rangeslider_visible=False, template=TPL, paper_bgcolor="#FFFFFF", plot_bgcolor="#F8FAFC", margin=dict(l=10, r=10, t=40, b=10))
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width="stretch")
             with c2:
                 st.markdown(f"""
                 <div class="pro-card">
@@ -3315,12 +2766,14 @@ with tab_lab:
                     <p class="txt-white"><b>حجم الصفقة المقترح:</b> {selected_data['الأسهم']:,} سهم (صافي TP1: {selected_data['صافي TP1']:,.0f} ج.م)</p>
                 </div>
                 """, unsafe_allow_html=True)
-                st.link_button("🚀 افتح على TradingView ↗", selected_data["TradingView"], use_container_width=True)
+                st.link_button("🚀 افتح على TradingView ↗", selected_data["TradingView"], width="stretch")
 
         # 8) التحليل المالي
         with t_fund:
-            fund = fetch_fundamental_analysis(selected_data["Ticker"])
-            if "error" in fund:
+            fund = fetch_fundamental_analysis(selected_data["Ticker"]) if t_fund.open else {"error": "lazy"}
+            if not t_fund.open:
+                pass
+            elif "error" in fund:
                 st.warning("⚠️ تعذر جلب القوائم المالية التفصيلية لهذا السهم.")
             else:
                 f1, f2 = st.columns([1, 1.5])
@@ -3339,7 +2792,7 @@ with tab_lab:
                     if fund["breakdown"]:
                         dff = pd.DataFrame(fund["breakdown"], columns=["المعيار", "القيمة", "النتيجة"])
                         dff["النتيجة"] = dff["النتيجة"].map({True: "✅ ناجح (+1)", False: "❌ لم يتحقق"})
-                        st.dataframe(dff, use_container_width=True, hide_index=True)
+                        st.dataframe(dff, width="stretch", hide_index=True)
                     # تقويم الأرباح والكوبونات (V11.4)
                     st.markdown("##### 📅 تقويم الأرباح والكوبونات")
                     cal_rows = []
@@ -3356,7 +2809,7 @@ with tab_lab:
                         for k, v in cal.items():
                             cal_rows.append({"الحدث": str(k), "التanggal/القيمة" if False else "التاريخ/القيمة": str(v)[:60]})
                     if cal_rows:
-                        st.dataframe(pd.DataFrame(cal_rows), use_container_width=True, hide_index=True)
+                        st.dataframe(pd.DataFrame(cal_rows), width="stretch", hide_index=True)
                     else:
                         st.caption("ℹ️ لا توجد بيانات تقويم متاحة لهذا السهم.")
 
@@ -3375,18 +2828,47 @@ with tab_lab:
 
                 sq9, g_times = compute_gann_simple(piv_d, piv_p, is_low, selected_data["الإغلاق"])
                 st.markdown("##### 📐 مربع التسعة (Square of 9) — مستويات سعرية")
-                st.dataframe(pd.DataFrame(sq9), use_container_width=True, hide_index=True)
+                st.dataframe(pd.DataFrame(sq9), width="stretch", hide_index=True)
                 st.markdown("##### ⏱️ دورات جان (Time Cycles) — متى تحدث انعكاسات؟")
                 if g_times:
-                    st.dataframe(pd.DataFrame(g_times), use_container_width=True, hide_index=True)
+                    st.dataframe(pd.DataFrame(g_times), width="stretch", hide_index=True)
                 else:
                     st.info("لا توجد دورات في النطاق (±30 إلى 180 يوم).")
-                st.caption("💡 مربع التسعة = مستويات دعم/مقاومة (سعر). دورات جان = تواريخ انعكاس (زمن). استخدمها لتحديد: متى (time) + أين (price).")
+                st.caption("💡 مربع التسعة = مستويات دعم/مقاومة (سعر). دورات جان = تواريخ انعكاس (زمن). ⚠️ مفيش دليل إحصائي على جان — للاستئناس فقط.")
+                with st.expander("🪐 الخريطة الفلكية (بدون أي دليل إحصائي — للفضول فقط)"):
+                    _now_c = get_cairo_now()
+                    _pos = get_planetary_longitudes(_now_c.replace(tzinfo=None))
+                    st.dataframe(pd.DataFrame([{"الكوكب": k, "البرج": deg_to_zodiac(v), "الطول °": round(v, 1)} for k, v in _pos.items()]), width="stretch", hide_index=True)
+                    _asp = schools.upcoming_aspects(_now_c.date(), 30)
+                    if _asp:
+                        st.dataframe(pd.DataFrame(_asp), width="stretch", hide_index=True)
+
+        # 9b) هارمونيك + إليوت (تجريبي، V11.5)
+        with t_exp:
+            st.warning("🔬 الهارمونيك وإليوت مدارس تفسيرية أدلتها الإحصائية ضعيفة — متدخلش بيها لوحدها، ومش داخلة في الإجماع.")
+            if _lab_df.empty or len(_lab_df) < 60:
+                st.info("ℹ️ البيانات التاريخية غير كافية.")
+            else:
+                ex1, ex2 = st.columns(2)
+                with ex1:
+                    hm = analyze_harmonic_patterns(_lab_df)
+                    st.markdown(f"##### 🦋 الهارمونيك: <span class='{hm['badge_cls']}'>{hm['pattern_name']}</span>", unsafe_allow_html=True)
+                    st.caption(hm["notes"])
+                    if hm["detected"]:
+                        st.markdown(f"**PRZ:** {hm['prz_low']} — {hm['prz_high']} | **T1:** {hm['target_1']} | **T2:** {hm['target_2']}")
+                with ex2:
+                    ew = analyze_elliott_waves(_lab_df.tail(250))
+                    st.markdown(f"##### 🌊 إليوت: <span class='{ew['badge_cls']}'>{ew['wave_name']}</span>", unsafe_allow_html=True)
+                    st.caption(ew["summary"])
+                    if ew["rules_check"]:
+                        st.dataframe(pd.DataFrame([{"القاعدة": r[0], "القيمة": r[1], "": "✅" if r[2] else "❌"} for r in ew["rules_check"]]), width="stretch", hide_index=True)
 
         # 10) الرادار الخبري
         with t_news:
-            news_items = fetch_stock_news(selected_symbol)
-            if not news_items:
+            news_items = fetch_stock_news(selected_symbol, selected_data.get("اسم الشركة", "")) if t_news.open else None
+            if news_items is None:
+                pass
+            elif not news_items:
                 st.info("ℹ️ لا توجد أخبار حديثة منشورة لهذا السهم حالياً.")
             else:
                 for n in news_items:
@@ -3402,7 +2884,8 @@ with tab_lab:
 
         # 11) Backtest (V11.4)
         with t_bt:
-            st.markdown("#### 🧪 Backtest بسيط — استراتيجية close>EMA20>EMA50 + RVOL")
+            st.markdown("#### 🧪 Backtest — استراتيجية close>EMA20>EMA50 + RVOL")
+            st.caption("V11.5: الدخول على افتتاح الجلسة التالية، الوقف 2×ATR14 حقيقي، الفجوات بتتنفذ بسعر الافتتاح، انزلاق 0.2% + الرسوم على الجانبين. النتايج الماضية مش ضمان.")
             btc1, btc2, btc3 = st.columns(3)
             with btc1:
                 bt_sym = st.selectbox("السهم:", options=ordered_symbols, key="bt_sym_sel", format_func=lambda s: "%s — %s" % (s, all_analyzed_map[s]["اسم الشركة"]))
@@ -3427,12 +2910,15 @@ with tab_lab:
                     b6.markdown(f'<div class="kpi-card"><div class="kpi-label">⬇️ Max DD</div><div class="kpi-val txt-red">{m["max_drawdown"]:,.0f}</div></div>', unsafe_allow_html=True)
                     b7.markdown('<div class="kpi-card"><div class="kpi-label">🏆 Wins</div><div class="kpi-val txt-green">%d</div></div>' % m["wins"], unsafe_allow_html=True)
                     b8.markdown('<div class="kpi-card"><div class="kpi-label">💔 Losses</div><div class="kpi-val txt-red">%d</div></div>' % m["losses"], unsafe_allow_html=True)
+                    _edge = m["return_pct"] - m["buy_hold_pct"]
+                    st.info(f"📐 متوسط الصفقة: **{m['avg_R']:+.2f}R** | الشراء والاحتفاظ لنفس الفترة: **{m['buy_hold_pct']:+.2f}%** | "
+                            f"الاستراتيجية {'أحسن' if _edge >= 0 else 'أسوأ'} بـ **{abs(_edge):.2f}** نقطة مئوية.")
                     if res["equity"]:
                         import plotly.graph_objects as _go
                         _fig_eq = _go.Figure(_go.Scatter(y=res["equity"], mode="lines", line=dict(color="#0284C7", width=2.5), fill="tozeroy", fillcolor="rgba(2,132,199,0.12)"))
                         _fig_eq.update_layout(title="Equity Curve", height=320, template=TPL, paper_bgcolor="#FFFFFF", plot_bgcolor="#F8FAFC", margin=dict(l=10,r=10,t=40,b=10))
-                        st.plotly_chart(_fig_eq, use_container_width=True)
-                    st.dataframe(pd.DataFrame(res["trades"]), use_container_width=True, hide_index=True)
+                        st.plotly_chart(_fig_eq, width="stretch")
+                    st.dataframe(pd.DataFrame(res["trades"]), width="stretch", hide_index=True)
 
 
         # 12) Manual Historical Data Upload (V11.4)
@@ -3520,9 +3006,9 @@ with tab_lab:
                             st.markdown("##### 🏦 SMC/ICT")
                             st.markdown(f"**الهيكل:** {smc['structure']}")
                             if smc["obs"]:
-                                st.dataframe(pd.DataFrame(smc["obs"]), use_container_width=True, hide_index=True)
+                                st.dataframe(pd.DataFrame(smc["obs"]), width="stretch", hide_index=True)
                             if smc["fvgs"]:
-                                st.dataframe(pd.DataFrame(smc["fvgs"]), use_container_width=True, hide_index=True)
+                                st.dataframe(pd.DataFrame(smc["fvgs"]), width="stretch", hide_index=True)
                             if smc["sweeps"]:
                                 for sw in smc["sweeps"]:
                                     st.info(sw)
@@ -3551,7 +3037,7 @@ with tab_lab:
                             import plotly.graph_objects as _go
                             fig = _go.Figure(_go.Candlestick(x=sub.index, open=sub["Open"], high=sub["High"], low=sub["Low"], close=sub["Close"], name="السعر"))
                             fig.update_layout(title="Chart (uploaded data)", height=400, template=TPL, paper_bgcolor="#FFFFFF", plot_bgcolor="#F8FAFC", xaxis_rangeslider_visible=False, margin=dict(l=10,r=10,t=40,b=10))
-                            st.plotly_chart(fig, use_container_width=True)
+                            st.plotly_chart(fig, width="stretch")
                         except Exception as e:
                             st.warning("Chart error: %s" % e)
                 except Exception as e:
@@ -3568,12 +3054,12 @@ with tab_settings:
         st.markdown("### ☁️ الربط السحابي الدائم (Supabase)")
         if is_authenticated():
             st.success("User: %s" % st.session_state.get("auth_email"))
-            if st.button("Logout", use_container_width=True):
+            if st.button("Logout", width="stretch"):
                 sb_logout()
                 st.rerun()
         st.markdown("---")
         st.caption("استعادة بيانات ما قبل V11.4 (user_id is null):")
-        if st.button("Claim Legacy Data", use_container_width=True):
+        if st.button("Claim Legacy Data", width="stretch"):
             uid = st.session_state.get("auth_user_id")
             if uid:
                 _sb_request("PATCH", "portfolio?user_id=is.null", payload={"user_id": uid})
@@ -3588,7 +3074,7 @@ with tab_settings:
 
         sbtn1, sbtn2 = st.columns(2)
         with sbtn1:
-            if st.button("🔌 فحص الاتصال واسترجاع المحفظة", use_container_width=True):
+            if st.button("🔌 فحص الاتصال واسترجاع المحفظة", width="stretch"):
                 ok_sb, msg_sb = test_supabase_connection()
                 if ok_sb:
                     st.session_state["force_cloud_sync"] = True
@@ -3597,7 +3083,7 @@ with tab_settings:
                 else:
                     st.error(msg_sb)
         with sbtn2:
-            if st.button("⬆️ رفع الأسهم المحلية للسحابة", use_container_width=True):
+            if st.button("⬆️ رفع الأسهم المحلية للسحابة", width="stretch"):
                 ok_up, msg_up = sync_full_portfolio_to_cloud(_load_local_portfolio_file() or my_portfolio)
                 st.success(msg_up) if ok_up else st.error(msg_up)
 
@@ -3645,7 +3131,7 @@ alter table tg_alerts_log disable row level security;
             st.session_state["tg_chat_val"] = tg_c_in
         with tgc2:
             st.write(""); st.write("")
-            if st.button("🔍 جلب Chat ID تلقائياً", use_container_width=True):
+            if st.button("🔍 جلب Chat ID تلقائياً", width="stretch"):
                 fid, fmsg = detect_telegram_chat_id(tg_t_in)
                 if fid:
                     st.session_state["tg_chat_val"] = fid
@@ -3655,7 +3141,7 @@ alter table tg_alerts_log disable row level security;
 
         st.session_state["cfg_tg_port"] = st.checkbox("🔔 إرسال تنبيهات المحفظة تلقائياً", value=tg_auto_port)
         st.session_state["cfg_tg_whales"] = st.checkbox("🐋 تنبيه صفقات الحيتان (سكور 80+)", value=tg_auto_whales)
-        if st.button("🧪 إرسال رسالة تجريبية لتليجرام", use_container_width=True):
+        if st.button("🧪 إرسال رسالة تجريبية لتليجرام", width="stretch"):
             ok_t, msg_t = send_telegram_message(tg_t_in, tg_c_in, "🦅 <b>EGX Whale Hunter Pro V11.4</b>\n✅ النظام السحابي، الألوان الداكنة، وتحليل التدفق الأوتوماتيكي تعمل بنجاح!")
             st.success("✅ وصلت الرسالة لتليجرام!") if ok_t else st.error(f"❌ {msg_t}")
 
@@ -3689,7 +3175,7 @@ with st.expander("📌 قائمة المراقبة (Watchlist) — تنبيها�
         wl_tgt = st.number_input("السعر الهدف", min_value=0.0, value=0.0, step=0.05, key="wl_tgt_in")
     with wlc4:
         st.write(""); st.write("")
-        if st.button("add", key="wl_add_btn", use_container_width=True):
+        if st.button("add", key="wl_add_btn", width="stretch"):
             if wl_sym and wl_tgt > 0:
                 wl = list(st.session_state.get("watchlist", []))
                 wl.append({"symbol": wl_sym, "direction": "above" if "above" in wl_dir else "below", "target": float(wl_tgt)})
@@ -3698,7 +3184,7 @@ with st.expander("📌 قائمة المراقبة (Watchlist) — تنبيها�
                 st.rerun()
     wl_df = pd.DataFrame(st.session_state.get("watchlist", []))
     if not wl_df.empty:
-        st.dataframe(wl_df, use_container_width=True, hide_index=True)
+        st.dataframe(wl_df, width="stretch", hide_index=True)
         del_sym = st.selectbox("حذف:", options=list(range(len(wl_df))), format_func=lambda i: "%s - %s %s" % (wl_df.iloc[i]["symbol"], wl_df.iloc[i]["direction"], wl_df.iloc[i]["target"]), key="wl_del_sel")
         if st.button("delete", key="wl_del_btn"):
             wl = list(st.session_state.get("watchlist", []))
