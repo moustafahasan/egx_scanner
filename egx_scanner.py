@@ -18,6 +18,7 @@ from plotly.subplots import make_subplots
 
 import egx_core as core
 import egx_schools as schools
+import egx_theme as theme
 from egx_schools import (
     run_simple_backtest, analyze_candlestick_patterns, analyze_support_resistance, compute_gann_simple,
     extract_zigzag_pivots, analyze_smc_ict, analyze_wyckoff_vsa, analyze_cpr_and_vp,
@@ -34,354 +35,19 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-if st.session_state.get("theme_mode", "light") == "dark":
-    st.markdown("""
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800;900&display=swap');
+# V11.5: نظام تصميم واحد بوضعين (داكن Terminal / فاتح Fintech). أول مرة بيتبع وضع Streamlit نفسه.
+if "theme_mode" not in st.session_state:
+    try:
+        st.session_state["theme_mode"] = "light" if st.context.theme.type == "light" else "dark"
+    except Exception:
+        st.session_state["theme_mode"] = "dark"
+THEME_MODE = st.session_state["theme_mode"]
+PAL = theme.palette(THEME_MODE)
+st.markdown(theme.build_css(THEME_MODE), unsafe_allow_html=True)
 
-        html, body, [class*="css"] {
-            font-family: 'Cairo', sans-serif !important;
-        }
-        .stApp {
-            background: radial-gradient(circle at top right, #0F172A 0%, #090D16 60%, #060911 100%);
-            color: #F8FAFC;
-            direction: rtl;
-        }
-        .block-container {
-            padding-top: 1.1rem;
-            padding-bottom: 2.5rem;
-            max-width: 1460px;
-        }
 
-        /* الهيدر الرئيسي */
-        .hero-banner {
-            background: linear-gradient(135deg, rgba(15, 23, 42, 0.95) 0%, rgba(30, 41, 59, 0.9) 100%);
-            border: 1px solid rgba(56, 189, 248, 0.28);
-            border-right: 5px solid #38BDF8;
-            border-radius: 16px;
-            padding: 16px 22px;
-            margin-bottom: 14px;
-            box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 12px;
-        }
-        .hero-title { font-size: 24px; font-weight: 900; color: #FFFFFF; letter-spacing: 0.3px; }
-        .hero-accent { color: #38BDF8; }
-        .hero-sub { font-size: 13px; color: #94A3B8; margin-top: 3px; }
-        .session-pill {
-            background: rgba(11, 15, 25, 0.85);
-            border: 1px solid #38BDF8;
-            color: #38BDF8;
-            padding: 7px 15px;
-            border-radius: 999px;
-            font-weight: 800;
-            font-size: 13px;
-        }
-
-        /* تصميم علامات التبويب (Tabs) الاحترافي */
-        .stTabs [data-baseweb="tab-list"] {
-            gap: 8px;
-            background-color: rgba(19, 28, 49, 0.75);
-            padding: 8px 10px;
-            border-radius: 14px;
-            border: 1px solid #26334D;
-            flex-wrap: wrap;
-        }
-        .stTabs [data-baseweb="tab"] {
-            height: 42px;
-            background-color: transparent;
-            border-radius: 10px;
-            color: #94A3B8;
-            font-weight: 700;
-            font-size: 14px;
-            padding: 0 16px;
-            border: 1px solid transparent;
-            transition: all 0.2s ease;
-        }
-        .stTabs [data-baseweb="tab"]:hover {
-            background-color: rgba(56, 189, 248, 0.1);
-            color: #E2E8F0;
-            border-color: rgba(56, 189, 248, 0.3);
-        }
-        .stTabs [aria-selected="true"] {
-            background: linear-gradient(135deg, #0284C7 0%, #0369A1 100%) !important;
-            color: #FFFFFF !important;
-            border-color: #38BDF8 !important;
-            box-shadow: 0 4px 14px rgba(2, 132, 199, 0.35);
-        }
-        .stTabs [data-baseweb="tab-highlight"] {
-            display: none;
-        }
-
-        /* البطاقات والمؤشرات */
-        .kpi-card {
-            background: linear-gradient(180deg, #151F36 0%, #10182B 100%);
-            border: 1px solid #26334D;
-            border-top: 3px solid #38BDF8;
-            border-radius: 14px;
-            padding: 14px 16px;
-            text-align: center;
-            box-shadow: 0 4px 16px rgba(0,0,0,0.2);
-        }
-        .kpi-label { font-size: 12px; color: #94A3B8; margin-bottom: 4px; font-weight: 700; }
-        .kpi-val { font-size: 20px; font-weight: 900; color: #FFFFFF; }
-
-        .pro-card {
-            background: #131C31;
-            border: 1px solid #26334D;
-            border-right: 4px solid #38BDF8;
-            border-radius: 14px;
-            padding: 16px 18px;
-            margin-bottom: 12px;
-            box-shadow: 0 4px 18px rgba(0,0,0,0.22);
-        }
-        .top-card {
-            background: linear-gradient(180deg, #17233E 0%, #101726 100%);
-            border: 1px solid #2B3B59;
-            border-radius: 14px;
-            padding: 15px;
-            margin-bottom: 10px;
-        }
-        .top-card-gold {
-            border: 1px solid #FACC15;
-            box-shadow: 0 0 22px rgba(250, 204, 21, 0.14);
-        }
-        .stock-header-strip {
-            background: linear-gradient(90deg, #131C31 0%, #1B2845 100%);
-            border: 1px solid #334155;
-            border-right: 5px solid #FACC15;
-            border-radius: 14px;
-            padding: 14px 20px;
-            margin-bottom: 14px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 12px;
-        }
-
-        /* الشارات والتنبيهات */
-        .badge-bull { background: rgba(34,197,94,0.16); color: #4ADE80; border: 1px solid #22C55E; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; }
-        .badge-bear { background: rgba(239,68,68,0.16); color: #F87171; border: 1px solid #EF4444; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; }
-        .badge-warn { background: rgba(250,204,21,0.16); color: #FACC15; border: 1px solid #EAB308; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; }
-
-        .alert-box-success { background: rgba(22,101,52,0.28); border: 1px solid #22C55E; border-right: 5px solid #22C55E; border-radius: 12px; padding: 12px 16px; margin-bottom: 10px; color: #ECFDF5; }
-        .alert-box-warn { background: rgba(133,77,14,0.28); border: 1px solid #EAB308; border-right: 5px solid #EAB308; border-radius: 12px; padding: 12px 16px; margin-bottom: 10px; color: #FEFCE8; }
-        .alert-box-danger { background: rgba(153,27,27,0.32); border: 1px solid #EF4444; border-right: 5px solid #EF4444; border-radius: 12px; padding: 12px 16px; margin-bottom: 10px; color: #FEF2F2; }
-        .news-item { background: #131C31; border: 1px solid #26334D; border-radius: 12px; padding: 12px 15px; margin-bottom: 8px; }
-
-        .txt-green { color: #4ADE80; } .txt-red { color: #F87171; } .txt-gold { color: #FACC15; }
-        .txt-cyan { color: #38BDF8; } .txt-white { color: #F8FAFC; } .txt-muted { color: #94A3B8; }
-    </style>
-    """, unsafe_allow_html=True)
-else:
-    st.markdown("""
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800;900&display=swap');
-
-        html, body, [class*="css"] {
-            font-family: 'Cairo', sans-serif !important;
-        }
-
-        /* ===== V11.4 Light Theme ===== */
-        .stApp, [data-testid="stAppViewContainer"], [data-testid="stHeader"], [data-testid="stToolbar"] {
-            background-color: #F1F5F9 !important;
-            color: #0F172A !important;
-        }
-        .main .block-container, .block-container {
-            direction: rtl;
-            text-align: right;
-            padding-top: 1.1rem;
-            padding-bottom: 2.5rem;
-            max-width: 1460px;
-        }
-
-        div[data-baseweb="input"], div[data-baseweb="base-input"], input, textarea {
-            background-color: #FFFFFF !important;
-            color: #0F172A !important;
-            border-color: #CBD5E1 !important;
-            border-radius: 8px !important;
-        }
-        input::placeholder { color: #64748B !important; }
-
-        button[data-testid="stNumberInputStepDown"], button[data-testid="stNumberInputStepUp"] {
-            background-color: #E2E8F0 !important;
-            color: #0F172A !important;
-            border-color: #CBD5E1 !important;
-        }
-        button[data-testid="stNumberInputStepDown"]:hover, button[data-testid="stNumberInputStepUp"]:hover {
-            background-color: #0284C7 !important;
-            color: #FFFFFF !important;
-        }
-
-        label, label p, [data-testid="stWidgetLabel"] p, div[role="radiogroup"] label p, [data-testid="stCheckbox"] label p {
-            color: #1E293B !important;
-            font-weight: 600 !important;
-        }
-
-        .stButton > button, .stDownloadButton > button, .stLinkButton > a {
-            background-color: #FFFFFF !important;
-            color: #1E3A8A !important;
-            border: 1px solid #CBD5E1 !important;
-            border-radius: 10px !important;
-            font-weight: 700 !important;
-            transition: all 0.2s ease;
-        }
-        .stButton > button:hover, .stDownloadButton > button:hover, .stLinkButton > a:hover {
-            border-color: #0284C7 !important;
-            color: #0284C7 !important;
-            background-color: #EFF6FF !important;
-        }
-        .stButton > button[kind="primary"] {
-            background: linear-gradient(135deg, #0284C7 0%, #1E3A8A 100%) !important;
-            color: #FFFFFF !important;
-            border: 1px solid #0284C7 !important;
-            box-shadow: 0 4px 14px rgba(2, 132, 199, 0.25);
-        }
-        .stButton > button[kind="primary"]:hover {
-            background: linear-gradient(135deg, #1E3A8A 0%, #1E40AF 100%) !important;
-            color: #FFFFFF !important;
-        }
-
-        [data-testid="stExpander"], div[data-baseweb="select"] > div, [data-testid="stFileUploaderDropzone"] {
-            background-color: #FFFFFF !important;
-            color: #0F172A !important;
-            border-color: #CBD5E1 !important;
-            border-radius: 10px !important;
-        }
-        ul[data-baseweb="menu"] {
-            background-color: #FFFFFF !important;
-            color: #0F172A !important;
-        }
-
-        .stTabs [data-baseweb="tab-list"] {
-            gap: 8px;
-            background-color: #FFFFFF;
-            padding: 8px 10px;
-            border-radius: 14px;
-            border: 1px solid #CBD5E1;
-            flex-wrap: wrap;
-            box-shadow: 0 2px 8px rgba(15, 23, 42, 0.05);
-        }
-        .stTabs [data-baseweb="tab"] {
-            height: 42px;
-            background-color: transparent;
-            border-radius: 10px;
-            color: #475569 !important;
-            font-weight: 700;
-            font-size: 14px;
-            padding: 0 16px;
-            border: 1px solid transparent;
-            transition: all 0.2s ease;
-        }
-        .stTabs [data-baseweb="tab"]:hover {
-            background-color: #EFF6FF;
-            color: #0284C7 !important;
-            border-color: #BFDBFE;
-        }
-        .stTabs [aria-selected="true"] {
-            background: linear-gradient(135deg, #0284C7 0%, #1E3A8A 100%) !important;
-            color: #FFFFFF !important;
-            border-color: #0284C7 !important;
-            box-shadow: 0 4px 14px rgba(2, 132, 199, 0.30);
-        }
-        .stTabs [data-baseweb="tab-highlight"] { display: none; }
-
-        .kpi-card {
-            background: linear-gradient(180deg, #FFFFFF 0%, #F8FAFC 100%);
-            border: 1px solid #CBD5E1;
-            border-top: 3px solid #0284C7;
-            border-radius: 14px;
-            padding: 14px 16px;
-            text-align: center;
-            box-shadow: 0 4px 16px rgba(15, 23, 42, 0.06);
-        }
-        .kpi-label { font-size: 12px; color: #475569; margin-bottom: 4px; font-weight: 700; }
-        .kpi-val { font-size: 20px; font-weight: 900; color: #0F172A; }
-
-        .pro-card {
-            background: #FFFFFF;
-            border: 1px solid #CBD5E1;
-            border-right: 4px solid #0284C7;
-            border-radius: 14px;
-            padding: 16px 18px;
-            margin-bottom: 12px;
-            box-shadow: 0 4px 18px rgba(15, 23, 42, 0.06);
-        }
-        .top-card {
-            background: linear-gradient(180deg, #FFFFFF 0%, #F8FAFC 100%);
-            border: 1px solid #CBD5E1;
-            border-radius: 14px;
-            padding: 15px;
-            margin-bottom: 10px;
-            box-shadow: 0 4px 14px rgba(15, 23, 42, 0.05);
-        }
-        .top-card-gold {
-            border: 1px solid #EAB308;
-            box-shadow: 0 0 22px rgba(234, 179, 8, 0.18);
-        }
-        .stock-header-strip {
-            background: linear-gradient(90deg, #FFFFFF 0%, #EFF6FF 100%);
-            border: 1px solid #CBD5E1;
-            border-right: 5px solid #EAB308;
-            border-radius: 14px;
-            padding: 14px 20px;
-            margin-bottom: 14px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 12px;
-            box-shadow: 0 4px 14px rgba(15, 23, 42, 0.05);
-        }
-
-        .badge-bull { background: #DCFCE7; color: #15803D; border: 1px solid #86EFAC; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; }
-        .badge-bear { background: #FEE2E2; color: #B91C1C; border: 1px solid #FCA5A5; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; }
-        .badge-warn { background: #FEF3C7; color: #92400E; border: 1px solid #FCD34D; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; }
-
-        .alert-box-success { background: #ECFDF5; border: 1px solid #86EFAC; border-right: 5px solid #22C55E; border-radius: 12px; padding: 12px 16px; margin-bottom: 10px; color: #064E3B; }
-        .alert-box-warn { background: #FFFBEB; border: 1px solid #FCD34D; border-right: 5px solid #EAB308; border-radius: 12px; padding: 12px 16px; margin-bottom: 10px; color: #78350F; }
-        .alert-box-danger { background: #FEF2F2; border: 1px solid #FCA5A5; border-right: 5px solid #EF4444; border-radius: 12px; padding: 12px 16px; margin-bottom: 10px; color: #7F1D1D; }
-        .news-item { background: #FFFFFF; border: 1px solid #CBD5E1; border-radius: 12px; padding: 12px 15px; margin-bottom: 8px; }
-
-        .txt-green { color: #15803D; } .txt-red { color: #B91C1C; } .txt-gold { color: #B45309; }
-        .txt-cyan { color: #0369A1; } .txt-white { color: #0F172A; } .txt-muted { color: #475569; }
-
-        .hero-banner {
-            background: linear-gradient(135deg, #FFFFFF 0%, #EFF6FF 100%);
-            border: 1px solid #BFDBFE;
-            border-right: 5px solid #0284C7;
-            border-radius: 16px;
-            padding: 16px 22px;
-            margin-bottom: 14px;
-            box-shadow: 0 8px 28px rgba(2, 132, 199, 0.10);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 12px;
-        }
-        .hero-title { font-size: 24px; font-weight: 900; color: #0F172A; letter-spacing: 0.3px; }
-        .hero-accent { color: #0284C7; }
-        .hero-sub { font-size: 13px; color: #475569; margin-top: 3px; }
-        .session-pill {
-            background: #EFF6FF;
-            border: 1px solid #0284C7;
-            color: #0284C7;
-            padding: 7px 15px;
-            border-radius: 999px;
-            font-weight: 800;
-            font-size: 13px;
-        }
-
-        .top-card:hover { transform: translateY(-2px); transition: transform .2s ease; }
-        .alert-box-success, .alert-box-warn, .alert-box-danger { animation: fadeIn .35s ease; }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(4px);} to { opacity:1; transform: translateY(0);} }
-    </style>
-    """, unsafe_allow_html=True)
+def _toggle_theme():
+    st.session_state["theme_mode"] = "light" if st.session_state.get("theme_mode") == "dark" else "dark"
 
 
 # ==========================================
@@ -1687,14 +1353,20 @@ sb_badge = "☁️ سحابة Supabase متصلة" if cloud_connected else "💾
 st.markdown(f"""
 <div class="hero-banner">
     <div>
-        <div class="hero-title">🦅 <span class="hero-accent">EGX WHALE HUNTER</span> PRO <span style="font-size:13px;color:#FACC15;">V11.5</span></div>
+        <div class="hero-title">🦅 <span class="hero-accent">EGX WHALE HUNTER</span> PRO <span class="hero-ver">V11.5</span></div>
         <div class="hero-sub">🌐 تغطية ({len(raw_egx_tv_map)} سهم) • {sb_badge} • 💼 محفظتي ({len(portfolio_clean_syms)}) • {tg_badge} • آخر تحديث: {last_live_sync}</div>
     </div>
     <div class="session-pill">{session_info['badge']}</div>
 </div>
 """, unsafe_allow_html=True)
 
-top_bar1, top_bar2, top_bar3 = st.columns([2.2, 1, 1])
+_tk_items = sorted(
+    [(sym_, float(q.get("close") or 0), float(q.get("change") or 0), float(q.get("turnover") or 0))
+     for sym_, q in raw_egx_tv_map.items() if float(q.get("close") or 0) > 0],
+    key=lambda x: -x[3])[:24]
+st.markdown(theme.ticker_html([(a, b, c) for a, b, c, _ in _tk_items]), unsafe_allow_html=True)
+
+top_bar1, top_bar2, top_bar3, top_bar4 = st.columns([2.2, 1, 1, 0.75])
 with top_bar1:
     if not cloud_connected:
         st.caption("⚠️ **ملاحظة:** السحابة غير مربوطة حالياً؛ افحص الاتصال من تبويب **⚙️ الإعدادات** لحفظ أسهمك بشكل دائم.")
@@ -1708,6 +1380,8 @@ with top_bar3:
         st.session_state["force_cloud_sync"] = True
         fetch_full_egx_tv_scanner.clear()
         st.rerun()
+with top_bar4:
+    st.toggle("🌙 الوضع الداكن", value=(THEME_MODE == "dark"), key="theme_toggle", on_change=_toggle_theme)
 
 # ==========================================
 # معالجة بيانات السوق والرادار
@@ -1930,7 +1604,7 @@ for w in list(st.session_state.get("watchlist", [])):
                 if ok_w:
                     record_sent_tg_alert(wk, get_cairo_now().strftime("%H:%M"), sent_tg_log)
 
-TPL = "plotly_dark" if st.session_state.get("theme_mode") == "dark" else "plotly_white"
+TPL = theme.plotly_template(THEME_MODE)
 # ==============================================================================
 # التنقل الرئيسي المقسم إلى 4 علامات تبويب احترافية مستقلة
 # ==============================================================================
@@ -1949,8 +1623,8 @@ with tab_radar:
     m1.markdown(f'<div class="kpi-card"><div class="kpi-label">📡 أسهم مفحوصة</div><div class="kpi-val">{len(raw_egx_tv_map)} سهم</div></div>', unsafe_allow_html=True)
     m2.markdown(f'<div class="kpi-card"><div class="kpi-label">🎯 صفقات نشطة</div><div class="kpi-val txt-green">{len(filtered_results)}</div></div>', unsafe_allow_html=True)
     m3.markdown(f'<div class="kpi-card"><div class="kpi-label">📈 أداء السوق (شهر)</div><div class="kpi-val {"txt-green" if market_median_perf1m>=0 else "txt-red"}">{market_median_perf1m:+.2f}%</div></div>', unsafe_allow_html=True)
-    m4.markdown(f'<div class="kpi-card" style="border-top-color:#FACC15;"><div class="kpi-label">🛡️ المخاطرة المقترحة</div><div class="kpi-val txt-gold">{capital*(risk_pct/100):,.0f} ج.م</div></div>', unsafe_allow_html=True)
-    m5.markdown(f'<div class="kpi-card" style="border-top-color:#22C55E;"><div class="kpi-label">🧭 مزاج السوق</div><div class="kpi-val" style="font-size:15px;"><span class="{market_mood_cls}">{market_mood_txt}</span><div style="font-size:11px;color:#475569;margin-top:2px;">Breadth {market_breadth_pct:.0f}% • VWAP {market_vwap_breadth:.0f}%</div></div></div>', unsafe_allow_html=True)
+    m4.markdown(f'<div class="kpi-card" style="border-top-color:var(--gold);"><div class="kpi-label">🛡️ المخاطرة المقترحة</div><div class="kpi-val txt-gold">{capital*(risk_pct/100):,.0f} ج.م</div></div>', unsafe_allow_html=True)
+    m5.markdown(f'<div class="kpi-card" style="border-top-color:var(--up);"><div class="kpi-label">🧭 مزاج السوق</div><div class="kpi-val" style="font-size:15px;"><span class="{market_mood_cls}">{market_mood_txt}</span><div style="font-size:11px;color:var(--muted);margin-top:2px;">Breadth {market_breadth_pct:.0f}% • VWAP {market_vwap_breadth:.0f}%</div></div></div>', unsafe_allow_html=True)
     st.write("")
 
     if watchlist_alerts:
@@ -1979,11 +1653,11 @@ with tab_radar:
                     <span class="txt-white" style="font-size:23px;font-weight:900;">{item['الرمز']}</span>
                     <span class="txt-cyan" style="font-size:18px;font-weight:800;">{item['السكور']}/100</span>
                 </div>
-                <div style="font-size:12px;color:#FACC15;margin-bottom:6px;font-weight:700;">{item['اسم الشركة']}</div>
+                <div style="font-size:12px;color:var(--gold);margin-bottom:6px;font-weight:700;">{item['اسم الشركة']}</div>
                 <div style="font-size:13px;margin-bottom:8px;" class="txt-muted">
                     السعر: <b class="txt-white">{item['الإغلاق']}</b> (<span class="{'txt-green' if item['التغير %']>=0 else 'txt-red'}">{item['التغير %']:+.2f}%</span>) • وتيرة: <b class="txt-gold">{item['الفوليوم']}x</b> • {item['الرأي اللحظي']}
                 </div>
-                <div style="display:flex;justify-content:space-between;background:#F8FAFC;padding:8px 10px;border-radius:10px;font-size:12px;">
+                <div class="top-card-strip">
                     <span>🛑 الوقف: <b class="txt-red">{item['الوقف (2xATR)']}</b></span>
                     <span>🎯 TP1: <b class="txt-green">{item['TP1']}</b></span>
                     <span>💰 صافي: <b class="txt-green">{item['صافي TP1']:,.0f}</b></span>
@@ -2005,7 +1679,7 @@ with tab_radar:
                     _agg = _sdf.groupby("sector").agg(avg_change=("change","mean"), avg_score=("score","mean"), total_turnover=("turnover","sum"), count=("symbol","count")).reset_index()
                     _agg = _agg.sort_values("avg_change", ascending=False)
                     _fig_sec = _px.bar(_agg, x="sector", y="avg_change", color="avg_score", color_continuous_scale="RdYlGn", title="Sector Rotation (avg change %, color=avg score)", text="count")
-                    _fig_sec.update_layout(height=360, template=TPL, paper_bgcolor="#FFFFFF", plot_bgcolor="#F8FAFC", margin=dict(l=10,r=10,t=40,b=10))
+                    _fig_sec.update_layout(height=360, template=TPL, margin=dict(l=10,r=10,t=40,b=10))
                     st.plotly_chart(_fig_sec, width="stretch")
                     st.dataframe(_agg, width="stretch", hide_index=True)
                 else:
@@ -2057,7 +1731,7 @@ with tab_portfolio:
     pk1.markdown(f'<div class="kpi-card"><div class="kpi-label">💵 إجمالي التكلفة</div><div class="kpi-val">{total_port_cost:,.0f} ج.م</div></div>', unsafe_allow_html=True)
     pk2.markdown(f'<div class="kpi-card"><div class="kpi-label">💰 القيمة الحالية</div><div class="kpi-val txt-cyan">{total_port_val:,.0f} ج.م</div></div>', unsafe_allow_html=True)
     pk3.markdown(f'<div class="kpi-card"><div class="kpi-label">📈 صافي الربح/الخسارة</div><div class="kpi-val {"txt-green" if total_net_pnl>=0 else "txt-red"}">{total_net_pnl:+,.0f} ({total_pnl_pct:+.1f}%)</div></div>', unsafe_allow_html=True)
-    pk4.markdown(f'<div class="kpi-card" style="border-top-color:#FACC15;"><div class="kpi-label">🛡️ المخاطرة المفتوحة</div><div class="kpi-val txt-gold">{total_open_risk:,.0f} ({open_risk_pct:.1f}%)</div></div>', unsafe_allow_html=True)
+    pk4.markdown(f'<div class="kpi-card" style="border-top-color:var(--gold);"><div class="kpi-label">🛡️ المخاطرة المفتوحة</div><div class="kpi-val txt-gold">{total_open_risk:,.0f} ({open_risk_pct:.1f}%)</div></div>', unsafe_allow_html=True)
     st.write("")
     # ===== خريطة حرارة المحفظة (Treemap) V11.4 =====
     if portfolio_rows:
@@ -2069,7 +1743,7 @@ with tab_portfolio:
                 color="العائد %", color_continuous_scale="RdYlGn", color_continuous_midpoint=0,
                 title="خريطة حرارة المحفظة (حجم = كمية، لون = العائد %)",
             )
-            _fig_tm.update_layout(height=360, template=TPL, paper_bgcolor="#FFFFFF", margin=dict(l=10,r=10,t=40,b=10))
+            _fig_tm.update_layout(height=360, template=TPL, margin=dict(l=10,r=10,t=40,b=10))
             st.plotly_chart(_fig_tm, width="stretch")
         except Exception as _e:
             st.caption("تعذر رسم الخريطة: %s" % _e)
@@ -2085,7 +1759,7 @@ with tab_portfolio:
                 _adf = _adf.sort_values('contribution', ascending=False)
                 import plotly.express as _px
                 _fig_attr = _px.bar(_adf, x='الرمز', y='contribution', color='weight_pct', color_continuous_scale='RdYlGn', title='P&L Contribution by Stock (color=portfolio weight %)')
-                _fig_attr.update_layout(height=360, template=TPL, paper_bgcolor='#FFFFFF', plot_bgcolor='#F8FAFC', margin=dict(l=10,r=10,t=40,b=10))
+                _fig_attr.update_layout(height=360, template=TPL, margin=dict(l=10,r=10,t=40,b=10))
                 st.plotly_chart(_fig_attr, width="stretch")
                 st.dataframe(_adf[['الرمز', 'اسم الشركة', 'الكمية', 'السعر الحالي', 'صافي الربح/الخسارة', 'العائد %', 'weight_pct']], width="stretch", hide_index=True)
             except Exception as _e:
@@ -2168,10 +1842,10 @@ with tab_portfolio:
                 sub_p = df_ph.tail(90)
                 fig_p = go.Figure(go.Candlestick(x=sub_p.index, open=sub_p["Open"], high=sub_p["High"], low=sub_p["Low"], close=sub_p["Close"], name="السعر"))
                 fig_p.add_hline(y=p_item["متوسط الشراء"], line_dash="dot", line_color="#FACC15", annotation_text=f"شرائك: {p_item['متوسط الشراء']}")
-                fig_p.add_hline(y=p_item["وقف الخسارة"], line_dash="dash", line_color="#F87171", annotation_text=f"SL: {p_item['وقف الخسارة']}")
-                fig_p.add_hline(y=p_item["TP1"], line_dash="dash", line_color="#4ADE80", annotation_text=f"TP1: {p_item['TP1']}")
+                fig_p.add_hline(y=p_item["وقف الخسارة"], line_dash="dash", line_color=PAL["down"], annotation_text=f"SL: {p_item['وقف الخسارة']}")
+                fig_p.add_hline(y=p_item["TP1"], line_dash="dash", line_color=PAL["up"], annotation_text=f"TP1: {p_item['TP1']}")
                 fig_p.add_hline(y=p_item["TP2"], line_dash="dash", line_color="#10B981", annotation_text=f"TP2: {p_item['TP2']}")
-                fig_p.update_layout(title=f"📊 مستويات مركزك في {port_sel} ({p_item['اسم الشركة']})", height=420, xaxis_rangeslider_visible=False, template=TPL, paper_bgcolor="#FFFFFF", plot_bgcolor="#F8FAFC", margin=dict(l=10, r=10, t=40, b=10))
+                fig_p.update_layout(title=f"📊 مستويات مركزك في {port_sel} ({p_item['اسم الشركة']})", height=420, xaxis_rangeslider_visible=False, template=TPL, margin=dict(l=10, r=10, t=40, b=10))
                 st.plotly_chart(fig_p, width="stretch")
 
     # --- فرعي 2.2: إضافة سهم جديد + استيراد مستندات ثاندر ---
@@ -2364,7 +2038,7 @@ with tab_portfolio:
             rk1.markdown(f'<div class="kpi-card"><div class="kpi-label">📐 Sharpe (per-trade)</div><div class="kpi-val txt-cyan">{_sharpe:+.2f}</div></div>', unsafe_allow_html=True)
             rk2.markdown(f'<div class="kpi-card"><div class="kpi-label">📉 Sortino</div><div class="kpi-val txt-cyan">{_sortino:+.2f}</div></div>', unsafe_allow_html=True)
             rk3.markdown(f'<div class="kpi-card"><div class="kpi-label">⬇️ Max Drawdown</div><div class="kpi-val txt-red">{_maxdd:,.0f} ج.م</div></div>', unsafe_allow_html=True)
-            rk4.markdown(f'<div class="kpi-card" style="border-top-color:#FACC15;"><div class="kpi-label">🎯 Expectancy/صفقة</div><div class="kpi-val txt-gold">{_expectancy:+,.0f} ج.م</div></div>', unsafe_allow_html=True)
+            rk4.markdown(f'<div class="kpi-card" style="border-top-color:var(--gold);"><div class="kpi-label">🎯 Expectancy/صفقة</div><div class="kpi-val txt-gold">{_expectancy:+,.0f} ج.م</div></div>', unsafe_allow_html=True)
             rk5, rk6, rk7, rk8 = st.columns(4)
             rk5.markdown(f'<div class="kpi-card"><div class="kpi-label">🏆 متوسط ربح</div><div class="kpi-val txt-green">{_avg_win:+,.0f} ج.م</div></div>', unsafe_allow_html=True)
             rk6.markdown(f'<div class="kpi-card"><div class="kpi-label">💔 متوسط خسارة</div><div class="kpi-val txt-red">{_avg_loss:+,.0f} ج.م</div></div>', unsafe_allow_html=True)
@@ -2372,8 +2046,8 @@ with tab_portfolio:
             rk8.markdown(f'<div class="kpi-card"><div class="kpi-label">🔢 عدد الصفقات</div><div class="kpi-val">{len(closed_trades)}</div></div>', unsafe_allow_html=True)
             if _cum_series:
                 import plotly.graph_objects as _go
-                _fig_cum = _go.Figure(_go.Scatter(y=_cum_series, mode="lines+markers", line=dict(color="#0284C7", width=2.5), fill="tozeroy", fillcolor="rgba(2,132,199,0.12)"))
-                _fig_cum.update_layout(title="📈 منحنى الأرباح التراكمية (Equity Curve)", height=320, template=TPL, paper_bgcolor="#FFFFFF", plot_bgcolor="#F8FAFC", margin=dict(l=10,r=10,t=40,b=10))
+                _fig_cum = _go.Figure(_go.Scatter(y=_cum_series, mode="lines+markers", line=dict(color=PAL["accent"], width=2.5), fill="tozeroy", fillcolor=PAL["glow"]))
+                _fig_cum.update_layout(title="📈 منحنى الأرباح التراكمية (Equity Curve)", height=320, template=TPL, margin=dict(l=10,r=10,t=40,b=10))
                 st.plotly_chart(_fig_cum, width="stretch")
             st.write("")
 
@@ -2459,9 +2133,9 @@ with tab_lab:
             <div>
                 <span class="txt-cyan" style="font-size:22px;font-weight:900;">{selected_symbol}</span>
                 <span class="txt-gold" style="font-size:17px;font-weight:800;margin-right:10px;">{selected_data['اسم الشركة']}</span>
-                <div style="font-size:13px;color:#94A3B8;margin-top:3px;">{selected_data['التشخيص الفني']}</div>
-                <div style="font-size:11px;color:#B91C1C;margin-top:2px;">{("📡 <b>Live only</b> (TradingView) — التحليل التاريخي (SMC/Wyckoff/...) غير متوفر. استخدم التدفق اللحظي للقرار." if not _lab_df.shape[0] else "📊 <b>Live + History</b> (TradingView + Yahoo) — التحليل التاريخي متاح.")}</div>
-                <div style="font-size:11px;color:#64748B;margin-top:2px;">📡 التدفق اللحظي: TradingView (100% EGX) | 📊 التاريخي: Yahoo Finance (محدود)</div>
+                <div style="font-size:13px;color:var(--muted);margin-top:3px;">{selected_data['التشخيص الفني']}</div>
+                <div style="font-size:11px;color:var(--down);margin-top:2px;">{("📡 <b>Live only</b> (TradingView) — التحليل التاريخي (SMC/Wyckoff/...) غير متوفر. استخدم التدفق اللحظي للقرار." if not _lab_df.shape[0] else "📊 <b>Live + History</b> (TradingView + Yahoo) — التحليل التاريخي متاح.")}</div>
+                <div style="font-size:11px;color:var(--muted);margin-top:2px;">📡 التدفق اللحظي: TradingView (100% EGX) | 📊 التاريخي: Yahoo Finance (محدود)</div>
                 <div style="font-size:12px;margin-top:4px;"><b>MTF:</b> {mtf_txt}</div>
             </div>
             <div style="display:flex;gap:18px;align-items:center;flex-wrap:wrap;">
@@ -2514,7 +2188,7 @@ with tab_lab:
             fk1.markdown(f'<div class="kpi-card"><div class="kpi-label">🧭 القرار اللحظي</div><div class="kpi-val" style="font-size:16px;">{flow["short_verdict"]} ({flow["flow_score"]:+d})</div></div>', unsafe_allow_html=True)
             fk2.markdown(f'<div class="kpi-card"><div class="kpi-label">⚖️ متوسط السيولة VWAP</div><div class="kpi-val {"txt-green" if flow["vwap_diff_pct"]>=0 else "txt-red"}">{flow["vwap"]} ({flow["vwap_diff_pct"]:+.2f}%)</div></div>', unsafe_allow_html=True)
             fk3.markdown(f'<div class="kpi-card"><div class="kpi-label">⏱️ زخم 15 دقيقة (RSI)</div><div class="kpi-val txt-cyan">{flow["rsi15"]}</div></div>', unsafe_allow_html=True)
-            fk4.markdown(f'<div class="kpi-card" style="border-top-color:#FACC15;"><div class="kpi-label">💧 وتيرة السيولة الآن</div><div class="kpi-val txt-gold">{flow["rel_vol"]}x</div></div>', unsafe_allow_html=True)
+            fk4.markdown(f'<div class="kpi-card" style="border-top-color:var(--gold);"><div class="kpi-label">💧 وتيرة السيولة الآن</div><div class="kpi-val txt-gold">{flow["rel_vol"]}x</div></div>', unsafe_allow_html=True)
             st.write("")
             fl1, fl2 = st.columns([1.15, 1])
             with fl1:
@@ -2527,7 +2201,7 @@ with tab_lab:
                     </div>
                     <p class="txt-white"><b>أفضل طلب وعرض:</b> {flow['ba_pressure']} (السبريد: {flow['spread_pct']}%)</p>
                     <ul class="txt-white" style="padding-right:18px;font-size:14px;">{reasons_html}</ul>
-                    <div style="background:#F8FAFC;padding:10px;border-radius:8px;border-right:4px solid #38BDF8;">
+                    <div style="background:var(--bg2);padding:10px;border-radius:8px;border-right:4px solid var(--accent);">
                         <b class="txt-gold">💡 التوجيه:</b> <span class="txt-white">{flow['action_hint']}</span>
                     </div>
                 </div>
@@ -2541,7 +2215,7 @@ with tab_lab:
                 if (bid_sz + ask_sz) > 0:
                     imb_auto = ((bid_sz - ask_sz) / (bid_sz + ask_sz)) * 100.0
                     st.markdown(f"""
-                    <div class="pro-card" style="border-right-color:#FACC15;">
+                    <div class="pro-card" style="border-right-color:var(--gold);">
                         <h4 class="txt-gold" style="margin-top:0;">📖 عمق أفضل طلب وعرض (سحب تلقائي)</h4>
                         <p class="txt-white">🟢 كمية الطلب (Bid Size): <b>{bid_sz:,.0f}</b> &nbsp;|&nbsp; 🔴 كمية العرض (Ask Size): <b>{ask_sz:,.0f}</b></p>
                         <p class="txt-white" style="margin-bottom:0;"><b>نسبة التفوق اللحظي:</b> <span class="{'txt-green' if imb_auto>=0 else 'txt-red'}" style="font-size:18px;font-weight:900;">{imb_auto:+.1f}%</span></p>
@@ -2560,18 +2234,18 @@ with tab_lab:
                 )
 
                 st.markdown(f"""
-                <div class="pro-card" style="border-right-color:#38BDF8;">
+                <div class="pro-card" style="border-right-color:var(--accent);">
                     <h4 class="txt-cyan" style="margin-top:0;">⚖️ صافي التدفق المنفذ (Order Flow Delta — أوتوماتيك)</h4>
                     <p class="txt-muted" style="font-size:12px;">تحليل تلقائي لحجم السيولة المنفذة فعلياً على العرض مقابل الطلب دون أي إدخال يدوي:</p>
                     <div style="display:flex;justify-content:space-between;font-size:13px;font-weight:700;margin-bottom:4px;">
                         <span class="txt-green">🟢 شراء منفذ: {buy_vol_est:,.0f} ({buy_bar_w}%)</span>
                         <span class="txt-red">🔴 بيع منفذ: {sell_vol_est:,.0f} ({100-buy_bar_w}%)</span>
                     </div>
-                    <div style="width:100%;height:10px;background:#EF4444;border-radius:999px;overflow:hidden;margin-bottom:10px;">
-                        <div style="width:{buy_bar_w}%;height:100%;background:#22C55E;"></div>
+                    <div style="width:100%;height:10px;background:var(--down);border-radius:999px;overflow:hidden;margin-bottom:10px;">
+                        <div style="width:{buy_bar_w}%;height:100%;background:var(--up);"></div>
                     </div>
                     <p class="txt-white">📊 صافي الدلتا (Net Delta): <b class="{'txt-green' if net_delta>=0 else 'txt-red'}">{net_delta:+,.0f} سهم ({delta_pct:+.1f}%)</b></p>
-                    <div style="background:#F8FAFC;padding:9px 12px;border-radius:8px;">
+                    <div style="background:var(--bg2);padding:9px 12px;border-radius:8px;">
                         <b>الخلاصة اللحظية:</b> {delta_verdict}
                     </div>
                 </div>
@@ -2592,9 +2266,9 @@ with tab_lab:
                         col_f = "rgba(34,197,94,0.22)" if "شرائية" in fvg["النوع"] else "rgba(239,68,68,0.22)"
                         fig_smc.add_hrect(y0=fvg["من"], y1=fvg["إلى"], fillcolor=col_f, line_width=0, annotation_text="FVG", annotation_font_size=10)
                     for ob in smc["obs"]:
-                        col_o = "#4ADE80" if "طلب" in ob["النوع"] else "#F87171"
+                        col_o = PAL["up"] if "طلب" in ob["النوع"] else PAL["down"]
                         fig_smc.add_hrect(y0=ob["من"], y1=ob["إلى"], line_dash="dot", line_color=col_o, fillcolor="rgba(56,189,248,0.08)", annotation_text="OB", annotation_font_size=10)
-                    fig_smc.update_layout(title=f"🏦 مناطق Order Blocks و FVG لسهم {selected_symbol}", height=500, xaxis_rangeslider_visible=False, template=TPL, paper_bgcolor="#FFFFFF", plot_bgcolor="#F8FAFC", margin=dict(l=10, r=10, t=40, b=10))
+                    fig_smc.update_layout(title=f"🏦 مناطق Order Blocks و FVG لسهم {selected_symbol}", height=500, xaxis_rangeslider_visible=False, template=TPL, margin=dict(l=10, r=10, t=40, b=10))
                     st.plotly_chart(fig_smc, width="stretch")
                 with c2:
                     sweeps_html = "".join([f"<li>{s}</li>" for s in smc["sweeps"]]) if smc["sweeps"] else "<li>لا يوجد سحب سيولة حاد في آخر 10 جلسات.</li>"
@@ -2603,7 +2277,7 @@ with tab_lab:
                         <h4 class="txt-cyan" style="margin-top:0;">🧭 هيكل السوق المؤسسي</h4>
                         <p><span class="{smc['badge_cls']}">{smc['structure']}</span></p>
                         <p class="txt-white"><b>قمة الهيكل (Swing High):</b> {smc['swing_high'] or '—'} | <b>قاع الهيكل:</b> {smc['swing_low'] or '—'}</p>
-                        <hr style="border-color:#26334D;">
+                        <hr style="border-color:var(--border);">
                         <b class="txt-gold">🎯 رصد سحب السيولة (Liquidity Sweeps):</b>
                         <ul class="txt-white" style="padding-right:18px;font-size:13px;">{sweeps_html}</ul>
                     </div>
@@ -2635,10 +2309,10 @@ with tab_lab:
                         if vr >= 2.0:
                             v_cols.append("#00E5FF" if r["Close"] >= r["Open"] else "#D500F9")
                         else:
-                            v_cols.append("#4ADE80" if r["Close"] >= r["Open"] else "#F87171")
+                            v_cols.append(PAL["up"] if r["Close"] >= r["Open"] else PAL["down"])
                     fig_w.add_trace(go.Bar(x=sub_w.index, y=sub_w["Volume"], marker_color=v_cols, name="PVSRA Volume"), row=2, col=1)
                     fig_w.add_trace(go.Scatter(x=sub_w.index, y=sub_w["VolSMA20"], line=dict(color="#FACC15", width=1.4), name="متوسط 20"), row=2, col=1)
-                    fig_w.update_layout(title=f"🐋 بصمة الحيتان PVSRA ونطاق وايكوف: {selected_symbol}", height=500, xaxis_rangeslider_visible=False, template=TPL, paper_bgcolor="#FFFFFF", plot_bgcolor="#F8FAFC", margin=dict(l=10, r=10, t=40, b=10))
+                    fig_w.update_layout(title=f"🐋 بصمة الحيتان PVSRA ونطاق وايكوف: {selected_symbol}", height=500, xaxis_rangeslider_visible=False, template=TPL, margin=dict(l=10, r=10, t=40, b=10))
                     st.plotly_chart(fig_w, width="stretch")
                 with c2:
                     notes_html = "".join([f"<li style='margin-bottom:6px;'>{n}</li>" for n in wyk["vsa_notes"]])
@@ -2648,7 +2322,7 @@ with tab_lab:
                         <p><span class="{wyk['badge_cls']}">{wyk['phase']}</span></p>
                         <p class="txt-white"><b>سقف النطاق:</b> {wyk['box_high']} | <b>قاع النطاق:</b> {wyk['box_low']}</p>
                         <p class="txt-white"><b>نسبة فوليوم آخر جلسة:</b> <span class="txt-gold">{wyk['vol_ratio']}x</span></p>
-                        <hr style="border-color:#26334D;">
+                        <hr style="border-color:var(--border);">
                         <ul class="txt-white" style="padding-right:18px;font-size:13px;">{notes_html}</ul>
                     </div>
                     """, unsafe_allow_html=True)
@@ -2669,12 +2343,12 @@ with tab_lab:
                     fig_vp = make_subplots(rows=1, cols=2, shared_yaxes=True, column_widths=[0.76, 0.24], horizontal_spacing=0.02)
                     fig_vp.add_trace(go.Candlestick(x=sub_v.index, open=sub_v["Open"], high=sub_v["High"], low=sub_v["Low"], close=sub_v["Close"], name="السعر"), row=1, col=1)
                     fig_vp.add_hline(y=cvp["poc"], line_color="#FACC15", line_width=2.2, annotation_text=f"POC: {cvp['poc']}", row=1, col=1)
-                    fig_vp.add_hline(y=cvp["vah"], line_dash="dash", line_color="#4ADE80", annotation_text=f"VAH: {cvp['vah']}", row=1, col=1)
-                    fig_vp.add_hline(y=cvp["val"], line_dash="dash", line_color="#F87171", annotation_text=f"VAL: {cvp['val']}", row=1, col=1)
+                    fig_vp.add_hline(y=cvp["vah"], line_dash="dash", line_color=PAL["up"], annotation_text=f"VAH: {cvp['vah']}", row=1, col=1)
+                    fig_vp.add_hline(y=cvp["val"], line_dash="dash", line_color=PAL["down"], annotation_text=f"VAL: {cvp['val']}", row=1, col=1)
                     fig_vp.add_hrect(y0=cvp["bc"], y1=cvp["tc"], fillcolor="rgba(56,189,248,0.18)", line_color="#38BDF8", line_dash="dot", annotation_text="CPR", row=1, col=1)
-                    vp_colors = ["#FACC15" if round(p, 4) == cvp["poc"] else "#38BDF8" for p in cvp["bin_centers"]]
+                    vp_colors = [PAL["gold"] if round(p, 4) == cvp["poc"] else PAL["accent"] for p in cvp["bin_centers"]]
                     fig_vp.add_trace(go.Bar(y=cvp["bin_centers"], x=cvp["vol_hist"], orientation="h", marker_color=vp_colors, name="Volume Profile"), row=1, col=2)
-                    fig_vp.update_layout(title=f"🎯 خريطة CPR وبروفايل السيولة الأفقي: {selected_symbol}", height=510, xaxis_rangeslider_visible=False, template=TPL, paper_bgcolor="#FFFFFF", plot_bgcolor="#F8FAFC", showlegend=False, margin=dict(l=10, r=10, t=40, b=10))
+                    fig_vp.update_layout(title=f"🎯 خريطة CPR وبروفايل السيولة الأفقي: {selected_symbol}", height=510, xaxis_rangeslider_visible=False, template=TPL, showlegend=False, margin=dict(l=10, r=10, t=40, b=10))
                     st.plotly_chart(fig_vp, width="stretch")
                 with c2:
                     st.markdown(f"""
@@ -2684,7 +2358,7 @@ with tab_lab:
                         <p class="txt-white"><b>نقطة التحكم (POC):</b> <span class="txt-gold" style="font-weight:bold;">{cvp['poc']} ج.م</span></p>
                         <p class="txt-white"><b>أعلى منطقة القيمة (VAH):</b> <span class="txt-green">{cvp['vah']}</span></p>
                         <p class="txt-white"><b>أدنى منطقة القيمة (VAL):</b> <span class="txt-red">{cvp['val']}</span></p>
-                        <hr style="border-color:#26334D;">
+                        <hr style="border-color:var(--border);">
                         <p class="txt-white"><b>نطاق CPR:</b> {cvp['bc']} — {cvp['tc']} (Pivot: {cvp['pivot']})</p>
                         <p class="txt-white"><b>عرض النطاق:</b> {cvp['cpr_width_pct']}% {'🔥 (ضيق — انفجار سعري وشيك)' if cvp['cpr_width_pct'] <= 2.5 else ''}</p>
                         <p class="txt-white"><b>مقاومة R1:</b> {cvp['r1']} | <b>دعم S1:</b> {cvp['s1']}</p>
@@ -2707,7 +2381,7 @@ with tab_lab:
                 sub_c = _lab_df.tail(10)
                 import plotly.graph_objects as _go
                 fig_c = _go.Figure(_go.Candlestick(x=sub_c.index, open=sub_c["Open"], high=sub_c["High"], low=sub_c["Low"], close=sub_c["Close"], name="السعر"))
-                fig_c.update_layout(title="Last 10 Candles", height=320, template=TPL, paper_bgcolor="#FFFFFF", plot_bgcolor="#F8FAFC", xaxis_rangeslider_visible=False, margin=dict(l=10,r=10,t=40,b=10))
+                fig_c.update_layout(title="Last 10 Candles", height=320, template=TPL, xaxis_rangeslider_visible=False, margin=dict(l=10,r=10,t=40,b=10))
                 st.plotly_chart(fig_c, width="stretch")
 
         with t_sr:
@@ -2728,10 +2402,10 @@ with tab_lab:
                 import plotly.graph_objects as _go
                 fig_sr = _go.Figure(_go.Candlestick(x=sub_sr.index, open=sub_sr["Open"], high=sub_sr["High"], low=sub_sr["Low"], close=sub_sr["Close"], name="السعر"))
                 if sr["nearest_support"]:
-                    fig_sr.add_hline(y=sr["nearest_support"], line_dash="dash", line_color="#22C55E", annotation_text="Support")
+                    fig_sr.add_hline(y=sr["nearest_support"], line_dash="dash", line_color=PAL["up"], annotation_text="Support")
                 if sr["nearest_resistance"]:
-                    fig_sr.add_hline(y=sr["nearest_resistance"], line_dash="dash", line_color="#EF4444", annotation_text="Resistance")
-                fig_sr.update_layout(title="Support/Resistance Levels", height=400, template=TPL, paper_bgcolor="#FFFFFF", plot_bgcolor="#F8FAFC", xaxis_rangeslider_visible=False, margin=dict(l=10,r=10,t=40,b=10))
+                    fig_sr.add_hline(y=sr["nearest_resistance"], line_dash="dash", line_color=PAL["down"], annotation_text="Resistance")
+                fig_sr.update_layout(title="Support/Resistance Levels", height=400, template=TPL, xaxis_rangeslider_visible=False, margin=dict(l=10,r=10,t=40,b=10))
                 st.plotly_chart(fig_sr, width="stretch")
 
         with t_tech:
@@ -2748,10 +2422,10 @@ with tab_lab:
                     fig.add_trace(go.Scatter(x=sub_f.index, y=sub_f["EMA20"], line=dict(color="#A855F7", width=1.3), name="EMA 20"), row=1, col=1)
                     fig.add_trace(go.Scatter(x=sub_f.index, y=sub_f["EMA50"], line=dict(color="#38BDF8", width=1.6), name="EMA 50"), row=1, col=1)
                     fig.add_trace(go.Scatter(x=sub_f.index, y=sub_f["EMA200"], line=dict(color="#F59E0B", width=2.2), name="EMA 200"), row=1, col=1)
-                    fig.add_hline(y=selected_data["الوقف (2xATR)"], line_dash="dash", line_color="#F87171", annotation_text="SL", row=1, col=1)
-                    fig.add_hline(y=selected_data["TP1"], line_dash="dash", line_color="#4ADE80", annotation_text="TP1", row=1, col=1)
-                    fig.add_trace(go.Bar(x=sub_f.index, y=sub_f["Volume"], marker_color=["#4ADE80" if c >= o else "#F87171" for c, o in zip(sub_f["Close"], sub_f["Open"])], name="الفوليوم"), row=2, col=1)
-                    fig.update_layout(title=f"📈 الشارت الفني ومستويات التنفيذ: {selected_symbol} ({selected_data['اسم الشركة']})", height=520, xaxis_rangeslider_visible=False, template=TPL, paper_bgcolor="#FFFFFF", plot_bgcolor="#F8FAFC", margin=dict(l=10, r=10, t=40, b=10))
+                    fig.add_hline(y=selected_data["الوقف (2xATR)"], line_dash="dash", line_color=PAL["down"], annotation_text="SL", row=1, col=1)
+                    fig.add_hline(y=selected_data["TP1"], line_dash="dash", line_color=PAL["up"], annotation_text="TP1", row=1, col=1)
+                    fig.add_trace(go.Bar(x=sub_f.index, y=sub_f["Volume"], marker_color=[PAL["up"] if c >= o else PAL["down"] for c, o in zip(sub_f["Close"], sub_f["Open"])], name="الفوليوم"), row=2, col=1)
+                    fig.update_layout(title=f"📈 الشارت الفني ومستويات التنفيذ: {selected_symbol} ({selected_data['اسم الشركة']})", height=520, xaxis_rangeslider_visible=False, template=TPL, margin=dict(l=10, r=10, t=40, b=10))
                     st.plotly_chart(fig, width="stretch")
             with c2:
                 st.markdown(f"""
@@ -2759,7 +2433,7 @@ with tab_lab:
                     <h4 class="txt-cyan" style="margin-top:0;">📌 خطة التنفيذ: {selected_symbol}</h4>
                     <p><span class="badge-bull">{selected_data['نوع الإشارة']}</span> &nbsp; <b>السكور: {selected_data['السكور']}/100</b></p>
                     <p class="txt-muted" style="font-size:13px;">{selected_data['التشخيص الفني']}</p>
-                    <hr style="border-color:#26334D;">
+                    <hr style="border-color:var(--border);">
                     <p class="txt-white"><b>الدخول المرجعي:</b> {selected_data['الإغلاق']} ج.م</p>
                     <p class="txt-white"><b>الوقف (2×ATR):</b> <span class="txt-red">{selected_data['الوقف (2xATR)']}</span></p>
                     <p class="txt-white"><b>TP1:</b> <span class="txt-green">{selected_data['TP1']}</span> | <b>TP2:</b> <span class="txt-green">{selected_data['TP2']}</span> | <b>TP3:</b> <span class="txt-green">{selected_data['TP3']}</span></p>
@@ -2915,8 +2589,8 @@ with tab_lab:
                             f"الاستراتيجية {'أحسن' if _edge >= 0 else 'أسوأ'} بـ **{abs(_edge):.2f}** نقطة مئوية.")
                     if res["equity"]:
                         import plotly.graph_objects as _go
-                        _fig_eq = _go.Figure(_go.Scatter(y=res["equity"], mode="lines", line=dict(color="#0284C7", width=2.5), fill="tozeroy", fillcolor="rgba(2,132,199,0.12)"))
-                        _fig_eq.update_layout(title="Equity Curve", height=320, template=TPL, paper_bgcolor="#FFFFFF", plot_bgcolor="#F8FAFC", margin=dict(l=10,r=10,t=40,b=10))
+                        _fig_eq = _go.Figure(_go.Scatter(y=res["equity"], mode="lines", line=dict(color=PAL["accent"], width=2.5), fill="tozeroy", fillcolor=PAL["glow"]))
+                        _fig_eq.update_layout(title="Equity Curve", height=320, template=TPL, margin=dict(l=10,r=10,t=40,b=10))
                         st.plotly_chart(_fig_eq, width="stretch")
                     st.dataframe(pd.DataFrame(res["trades"]), width="stretch", hide_index=True)
 
@@ -3036,7 +2710,7 @@ with tab_lab:
                             sub = _df_up.tail(120)
                             import plotly.graph_objects as _go
                             fig = _go.Figure(_go.Candlestick(x=sub.index, open=sub["Open"], high=sub["High"], low=sub["Low"], close=sub["Close"], name="السعر"))
-                            fig.update_layout(title="Chart (uploaded data)", height=400, template=TPL, paper_bgcolor="#FFFFFF", plot_bgcolor="#F8FAFC", xaxis_rangeslider_visible=False, margin=dict(l=10,r=10,t=40,b=10))
+                            fig.update_layout(title="Chart (uploaded data)", height=400, template=TPL, xaxis_rangeslider_visible=False, margin=dict(l=10,r=10,t=40,b=10))
                             st.plotly_chart(fig, width="stretch")
                         except Exception as e:
                             st.warning("Chart error: %s" % e)
@@ -3153,8 +2827,13 @@ alter table tg_alerts_log disable row level security;
             index=(1 if only_leaders else 0)
         )
         st.session_state["cfg_only_leaders"] = ("القيادية" in scope_choice)
-        st.session_state["theme_mode"] = st.radio("theme:", ["light (nahari)", "dark (dakan)"], index=(0 if st.session_state.get("theme_mode","light")=="light" else 1), horizontal=True)
-        st.session_state["theme_mode"] = "light" if "light" in st.session_state["theme_mode"] else "dark"
+        try:
+            _native = st.context.theme.type
+        except Exception:
+            _native = None
+        if _native and _native != THEME_MODE:
+            st.caption("🎨 الجداول بتاخد ألوانها من إعداد Streamlit نفسه. عشان تتطابق مع الوضع الحالي: ⋮ (فوق) ← Settings ← "
+                       + ("Dark" if THEME_MODE == "dark" else "Light") + ".")
         st.session_state["profile_name"] = st.text_input("👤 اسم الملف (Profile):", value=st.session_state.get("profile_name", ""), placeholder="مثال: علي")
         st.session_state["cfg_capital"] = st.number_input("💰 رأس المال للمقترحات (ج.م):", min_value=5000, value=capital, step=5000)
         st.session_state["cfg_risk_pct"] = st.slider("🛡️ نسبة المخاطرة في الصفقة الواحدة (%):", 0.5, 5.0, risk_pct, 0.25)
