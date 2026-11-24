@@ -84,7 +84,7 @@ def parse_thndr_files(uploaded_files, known_names: dict) -> list:
                                 "الرمز": ln_sym,
                                 "اسم الشركة": known_names.get(ln_sym, ln_sym),
                                 "الكمية": qty,
-                                "السعر": round(price, 2),
+                                "السعر": round(price, 4),
                             })
                             found_in_lines = True
 
@@ -92,7 +92,7 @@ def parse_thndr_files(uploaded_files, known_names: dict) -> list:
                 if not found_in_lines and doc_sym:
                     m_qty = re.search(r"(?:Quantity|Qty|Shares|الكمية|عدد الأسهم)\s*[:\-]?\s*(\d+)", norm_txt, re.IGNORECASE)
                     m_prc = re.search(r"(?:Execution Price|Price|Avg Price|سعر التنفيذ|السعر)\s*[:\-]?\s*(\d+(?:\.\d+)?)", norm_txt, re.IGNORECASE)
-                    qty = int(m_qty.group(1)) if m_qty else 100
+                    qty = int(m_qty.group(1)) if m_qty else 0  # V11.5: مفيش كمية افتراضية — لازم تدخلها في الجدول
                     price = float(m_prc.group(1)) if m_prc else 0.0
                     if price > 0:
                         extracted_ops.append({
@@ -101,7 +101,7 @@ def parse_thndr_files(uploaded_files, known_names: dict) -> list:
                             "الرمز": doc_sym,
                             "اسم الشركة": known_names.get(doc_sym, doc_sym),
                             "الكمية": qty,
-                            "السعر": round(price, 2),
+                            "السعر": round(price, 4),
                         })
             except Exception:
                 pass
@@ -133,7 +133,7 @@ def parse_thndr_files(uploaded_files, known_names: dict) -> list:
                             "الرمز": sym,
                             "اسم الشركة": known_names.get(sym, sym),
                             "الكمية": qty,
-                            "السعر": round(price, 2),
+                            "السعر": round(price, 4),
                         })
             except Exception:
                 pass

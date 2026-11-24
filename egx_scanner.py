@@ -16,11 +16,13 @@ import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+import egx_core as core
+
 # ==========================================
 # إعدادات الصفحة والتصميم البصري الداكن (V11.4)
 # ==========================================
 st.set_page_config(
-    page_title="EGX Whale Hunter Pro V11.4",
+    page_title="EGX Whale Hunter Pro V11.5",
     page_icon="🦅",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -596,7 +598,7 @@ except ImportError:
                     if not found_in_lines and doc_sym:
                         m_qty = re.search(r"(?:Quantity|Qty|Shares|الكمية|عدد الأسهم)\s*[:\-]?\s*(\d+)", norm_txt, re.IGNORECASE)
                         m_prc = re.search(r"(?:Execution Price|Price|Avg Price|سعر التنفيذ|السعر)\s*[:\-]?\s*(\d+(?:\.\d+)?)", norm_txt, re.IGNORECASE)
-                        qty = int(m_qty.group(1)) if m_qty else 100
+                        qty = int(m_qty.group(1)) if m_qty else 0  # V11.5: مفيش كمية افتراضية — لازم تدخلها في الجدول
                         price = float(m_prc.group(1)) if m_prc else 0.0
                         if price > 0:
                             extracted_ops.append({
@@ -648,13 +650,13 @@ def get_cairo_now() -> datetime:
 def get_egx_session_metrics() -> dict:
     now = get_cairo_now()
     wd = now.weekday()  # الأحد=6، الإثنين=0، الثلاثاء=1، الأربعاء=2، الخميس=3
-    is_trading_day = wd in [6, 0, 1, 2, 3]
+    is_trading_day = core.is_trading_day(now.date())
     start_dt = now.replace(hour=10, minute=0, second=0, microsecond=0)
     end_dt = now.replace(hour=14, minute=30, second=0, microsecond=0)
     total_mins = 270.0
 
     if not is_trading_day:
-        return {"is_open": False, "progress": 1.0, "badge": "🔴 عطلة أسبوعية (EGX مغلقة)"}
+        return {"is_open": False, "progress": 1.0, "badge": ("🔴 عطلة أسبوعية (EGX مغلقة)" if wd not in core.TRADING_WEEKDAYS else "🔴 إجازة رسمية (EGX مغلقة)")}
     if now < start_dt:
         return {"is_open": False, "progress": 1.0, "badge": "🟡 قبل افتتاح الجلسة (10:00 ص)"}
     if start_dt <= now <= end_dt:
@@ -714,8 +716,7 @@ def sb_login(email: str, password: str):
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         if data.get("access_token"):
-            st.session_state["auth_token"] = data["access_token"]
-            st.session_state["auth_user_id"] = (data.get("user") or {}).get("id")
+            _store_auth_session(data)
             st.session_state["auth_email"] = email
             return True, "✅ تم تسجيل الدخول!"
         return False, data.get("error_description") or str(data)
@@ -729,8 +730,39 @@ def sb_login(email: str, password: str):
         return False, str(e)
 
 
+def _store_auth_session(data: dict):
+    st.session_state["auth_token"] = data["access_token"]
+    st.session_state["auth_refresh"] = data.get("refresh_token", "")
+    st.session_state["auth_expires_at"] = time.time() + float(data.get("expires_in", 3600))
+    st.session_state["auth_user_id"] = (data.get("user") or {}).get("id") or st.session_state.get("auth_user_id")
+
+
+def refresh_auth_if_needed(force: bool = False) -> bool:
+    """يجدد التوكن قبل ما يخلص بدقيقتين (أو فوراً لو force). يرجّع False لو التجديد فشل."""
+    if not st.session_state.get("auth_refresh"):
+        return False
+    if not force and time.time() < float(st.session_state.get("auth_expires_at", 0)) - 120:
+        return True
+    sb_url = get_secret_safe("SUPABASE_URL") or st.session_state.get("sb_url_val", "")
+    sb_key = get_secret_safe("SUPABASE_KEY") or st.session_state.get("sb_key_val", "")
+    req = urllib.request.Request(
+        sb_url.rstrip("/") + "/auth/v1/token?grant_type=refresh_token",
+        data=json.dumps({"refresh_token": st.session_state["auth_refresh"]}).encode("utf-8"),
+        headers={"Content-Type": "application/json", "apikey": sb_key}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        if data.get("access_token"):
+            _store_auth_session(data)
+            return True
+    except Exception as e:
+        print(f"[Auth Refresh Error]: {e}")
+    sb_logout()
+    return False
+
+
 def sb_logout():
-    for k in ["auth_token", "auth_user_id", "auth_email"]:
+    for k in ["auth_token", "auth_user_id", "auth_email", "auth_refresh", "auth_expires_at"]:
         st.session_state.pop(k, None)
 
 
@@ -739,6 +771,7 @@ def is_authenticated() -> bool:
 
 
 def get_auth_headers():
+    refresh_auth_if_needed()
     sb_key = get_secret_safe("SUPABASE_KEY") or st.session_state.get("sb_key_val", "")
     token = st.session_state.get("auth_token") or sb_key
     return {
@@ -788,8 +821,16 @@ def _sb_request(method: str, path: str, payload=None, extra_headers=None):
         with urllib.request.urlopen(req, timeout=8) as resp:
             raw = resp.read().decode("utf-8")
             return True, (json.loads(raw) if raw else [])
+    except urllib.error.HTTPError as e:
+        if e.code == 401 and not extra_headers_retry_flag(extra_headers) and refresh_auth_if_needed(force=True):
+            return _sb_request(method, path, payload, {**(extra_headers or {}), "X-Retry": "1"})
+        return False, str(e)
     except Exception as e:
         return False, str(e)
+
+
+def extra_headers_retry_flag(h) -> bool:
+    return bool(h and h.get("X-Retry"))
 
 def test_supabase_connection():
     ok, res = _sb_request("GET", "portfolio?select=symbol&limit=1")
@@ -1155,52 +1196,11 @@ def analyze_intraday_flow(q: dict, fallback_close: float = 0.0, session_progress
         "action_hint": hint
     }
 
-def evaluate_smart_stop_loss(sym: str, curr_p: float, sl: float, buy_p: float, flow_res: dict, alert_buffer_pct: float = 2.5) -> dict:
-    """
-    محرك الوقف الذكي الهجين (V11.4):
-    - كسر عميق >= 1.5% أسفل الوقف -> خروج فوري.
-    - سيولة بيعية مؤسسية: RVOL >= 1.6x و (VWAP diff <= -0.8% أو flow_score <= -35).
-    - انهيار زخم: RSI15 <= 35 + CLV <= 15% + RVOL >= 1.2x.
-    خلاف ذلك: كسر لحظي تحت المراقبة (انتظار تأكيد الإغلاق 14:10-14:30).
-    """
-    result = {"action": "HOLD", "reason": "داخل النطاق الآمن", "is_hard_break": False, "is_intraday_break": False}
-    if sl <= 0 or curr_p <= 0:
-        return result
-
-    dist_sl_pct = ((curr_p - sl) / curr_p) * 100.0
-    deep_break = dist_sl_pct <= -1.5
-
-    rvol = float(flow_res.get("rel_vol", 1.0) or 1.0)
-    vwap_diff = float(flow_res.get("vwap_diff_pct", 0.0) or 0.0)
-    flow_score = int(flow_res.get("flow_score", 0) or 0)
-    rsi15 = float(flow_res.get("rsi15", 50.0) or 50.0)
-    clv = float(flow_res.get("clv_pct", 50.0) or 50.0)
-
-    inst_sell = (rvol >= 1.6) and (vwap_diff <= -0.8 or flow_score <= -35)
-    momentum_collapse = (rsi15 <= 35) and (clv <= 15) and (rvol >= 1.2)
-
-    if curr_p <= sl:
-        if deep_break or inst_sell or momentum_collapse:
-            result["action"] = "EXIT_NOW"
-            result["is_hard_break"] = True
-            if deep_break:
-                result["reason"] = f"كسر عميق أسفل الوقف ({dist_sl_pct:.2f}% <= -1.5%)"
-            elif inst_sell:
-                result["reason"] = f"سيولة بيعية مؤسسية (RVOL {rvol:.2f}x, VWAP {vwap_diff:+.2f}%)"
-            else:
-                result["reason"] = f"انهيار زخم (RSI15 {rsi15:.1f}, CLV {clv:.0f}%)"
-        else:
-            result["action"] = "WATCH_CLOSE"
-            result["is_intraday_break"] = True
-            result["reason"] = f"كسر لحظي تحت المراقبة (يبعد {dist_sl_pct:.2f}% عن الوقف) - انتظار تأكيد الإغلاق"
-    elif 0 < dist_sl_pct <= alert_buffer_pct:
-        result["action"] = "NEAR_SL"
-        result["reason"] = f"قرب الوقف ({dist_sl_pct:.1f}%)"
-    return result
+# V11.5: نفس الدالة بالظبط في البوت — مصدرها egx_core.py
+evaluate_smart_stop_loss = core.evaluate_smart_stop_loss
 
 
-
-def run_simple_backtest(df, capital=100000.0, risk_pct=1.5, fee_rate=0.0016):
+def run_simple_backtest(df, capital=100000.0, risk_pct=1.5, fee_rate=core.FEE_PER_SIDE_TRADER):
     if df is None or len(df) < 60:
         return {"trades": [], "equity": [], "metrics": {}}
     d = df.copy()
@@ -1313,6 +1313,7 @@ def estimate_time_horizon(atr: float, close: float, rvol: float = 1.0, score: in
     return f"TP1: {tp1_lo}-{tp1_hi} أيام | TP2: {tp2_lo}-{tp2_hi} يوم | TP3: {tp3_lo}-{tp3_hi} يوم (ATR {atr_pct:.2f}%)"
 
 
+@st.cache_data(ttl=900, show_spinner=False)
 def fetch_commodities() -> dict:
     """سحب بيانات المعادن والبترول من Yahoo Finance (V11.4). يُعيد dict متوافق مع tv_map."""
     out = {}
@@ -1590,7 +1591,7 @@ def score_stock_from_tv(q: dict, market_median_perf1m: float, capital: float, ri
     risk_amount = capital * (risk_pct / 100.0)
     shares = int(risk_amount // risk_per_share) if risk_per_share > 0 else 0
     position_value = shares * entry
-    net_profit_tp1 = (shares * (tp1 - entry)) - (position_value * fee_rate)
+    net_profit_tp1 = (shares * (tp1 - entry)) - ((position_value + shares * tp1) * fee_rate)
 
     return {
         "الرمز": sym,
@@ -2216,7 +2217,7 @@ except Exception as _ce:
 capital = int(st.session_state.get("cfg_capital", 100000))
 risk_pct = float(st.session_state.get("cfg_risk_pct", 1.5))
 min_turnover_m = float(st.session_state.get("cfg_min_turnover", 0.5))
-fee_rate = 0.0016 if st.session_state.get("cfg_fee_tier", "0.16%") == "0.16%" else 0.0037
+fee_rate = core.FEE_PER_SIDE_TRADER if st.session_state.get("cfg_fee_tier", "0.16%") == "0.16%" else core.FEE_PER_SIDE_STANDARD
 min_score = int(st.session_state.get("cfg_min_score", 45))
 alert_buffer_pct = float(st.session_state.get("cfg_alert_buf", 2.5))
 only_leaders = bool(st.session_state.get("cfg_only_leaders", False))
@@ -2235,7 +2236,7 @@ sb_badge = "☁️ سحابة Supabase متصلة" if cloud_connected else "💾
 st.markdown(f"""
 <div class="hero-banner">
     <div>
-        <div class="hero-title">🦅 <span class="hero-accent">EGX WHALE HUNTER</span> PRO <span style="font-size:13px;color:#FACC15;">V11.4</span></div>
+        <div class="hero-title">🦅 <span class="hero-accent">EGX WHALE HUNTER</span> PRO <span style="font-size:13px;color:#FACC15;">V11.5</span></div>
         <div class="hero-sub">🌐 تغطية ({len(raw_egx_tv_map)} سهم) • {sb_badge} • 💼 محفظتي ({len(portfolio_clean_syms)}) • {tg_badge} • آخر تحديث: {last_live_sync}</div>
     </div>
     <div class="session-pill">{session_info['badge']}</div>
@@ -2282,11 +2283,9 @@ scanner_results = []
 
 for sym, q_data in raw_egx_tv_map.items():
     analyzed = score_stock_from_tv(q_data, market_median_perf1m, capital, risk_pct, fee_rate, session_info["progress"])
-    try:
-        _has_hist = not fetch_single_stock_history(analyzed.get("Ticker", sym + ".CA")).empty
-    except Exception:
-        _has_hist = False
-    analyzed["توفر البيانات"] = "📊 Live+History" if _has_hist else "📡 Live only"
+    # V11.5: كان هنا تحميل تاريخ سنتين من Yahoo لكل سهم (حتى 350 طلب) في كل تحديث — ده سبب بطء الدخول.
+    # التاريخ بيتحمل دلوقتي للسهم اللي بتفتحه في المختبر بس.
+    analyzed["توفر البيانات"] = "📡 Live"
     all_analyzed_map[sym] = analyzed
     if only_leaders and sym not in LEADERS_EGX_SYMBOLS and sym not in COMMODITIES:
         continue
@@ -2332,6 +2331,8 @@ active_alerts = []
 total_port_cost, total_port_val, total_open_risk = 0.0, 0.0, 0.0
 today_str = get_cairo_now().strftime("%Y-%m-%d")
 sent_tg_log = load_sent_tg_log(today_str, force_refresh=force_sync)
+tg_phase = core.session_phase()
+tg_live_ok = tg_phase in ("continuous", "closing_auction")
 
 for item in my_portfolio:
     sym = item["symbol"].upper().replace(".CA", "").strip()
@@ -2357,7 +2358,8 @@ for item in my_portfolio:
     tp1 = user_tp1 if user_tp1 > 0 else round(buy_p + 1.618 * r_unit, 4)
     tp2 = user_tp2 if user_tp2 > 0 else round(buy_p + 2.618 * r_unit, 4)
 
-    sl_updated = False
+    # V11.5: لو المستويات مش متخزنة وعندنا بيانات حية، نخزنها مرة واحدة
+    sl_updated = bool(sinfo) and (user_sl <= 0 or user_tp1 <= 0 or user_tp2 <= 0)
     if trailing_on:
         be_price = round(buy_p * (1.0 + fee_rate * 2.0), 4)
         if curr_p >= tp1 and trailing_stage < 1 and be_price < curr_p:
@@ -2384,7 +2386,7 @@ for item in my_portfolio:
     trail_badge = "⏸️ معطّل" if not trailing_on else ("🚀 ملاحقة TP2" if trailing_stage >= 2 else ("🛡️ مؤمّن (تعادل)" if trailing_stage == 1 else "⏳ بانتظار TP1"))
     cost_val = shares * buy_p
     mkt_val = shares * curr_p
-    net_pnl = (mkt_val - cost_val) - (mkt_val * fee_rate)
+    net_pnl = (mkt_val - cost_val) - ((cost_val + mkt_val) * fee_rate)
     net_pnl_pct = (net_pnl / cost_val) * 100.0
     total_port_cost += cost_val
     total_port_val += mkt_val
@@ -2420,7 +2422,7 @@ for item in my_portfolio:
         alert_status, alert_code = f"🔔 قرب TP1 ({dist_tp1_pct:.1f}%)", "NEAR_TP1"
         active_alerts.append(("success", f"🔔 <b>اقترب الهدف ({sym}):</b> يبعد <b>{dist_tp1_pct:.1f}%</b> عن TP1 ({tp1})."))
 
-    if alert_code and tg_body and tg_auto_port and tg_token and tg_chat_id:
+    if alert_code and tg_body and tg_auto_port and tg_token and tg_chat_id and tg_live_ok:
         dkey = f"{today_str}_{sym}_{alert_code}"
         if dkey not in sent_tg_log:
             ok_s, _ = send_telegram_message(tg_token, tg_chat_id, tg_body)
@@ -2445,9 +2447,9 @@ for item in my_portfolio:
         "stock_info": sinfo
     })
 
-if tg_auto_whales and tg_token and tg_chat_id:
+if tg_auto_whales and tg_token and tg_chat_id and tg_phase == "continuous" and core.session_progress() >= 30 / 270:
     for r in filtered_results:
-        if r["السكور"] >= 80:
+        if r["السكور"] >= 80 and r["التغير %"] < 19.5:
             wk = f"{today_str}_WHALE_{r['الرمز']}"
             if wk not in sent_tg_log:
                 ok_w, _ = send_telegram_message(tg_token, tg_chat_id, f"🐋 <b>إشارة حيتان — {r['الرمز']} ({r['اسم الشركة']})</b>\nالسكور: <b>{r['السكور']}/100</b> | السعر: <b>{r['الإغلاق']}</b> | الوقف: <b>{r['الوقف (2xATR)']}</b> | TP1: <b>{r['TP1']}</b>")
@@ -2470,10 +2472,10 @@ for w in list(st.session_state.get("watchlist", [])):
     if triggered:
         msg = "📌 <b>Watchlist Alert — %s</b> (%s)<br>السعر <b>%s</b> %s الهدف <b>%s</b>" % (sym_w, sinfo_w.get("اسم الشركة",""), cp_w, (">=" if direction=="above" else "<="), target)
         watchlist_alerts.append((sym_w, msg))
-        if tg_auto_port and tg_token and tg_chat_id:
+        if tg_auto_port and tg_token and tg_chat_id and tg_live_ok:
             wk = "%s_WL_%s_%s" % (today_str, sym_w, target)
             if wk not in sent_tg_log:
-                ok_w, _ = send_telegram_message(tg_token, tg_chat_id, msg)
+                ok_w, _ = send_telegram_message(tg_token, tg_chat_id, msg.replace("<br>", "\n"))
                 if ok_w:
                     record_sent_tg_alert(wk, get_cairo_now().strftime("%H:%M"), sent_tg_log)
 
@@ -2596,7 +2598,7 @@ with tab_portfolio:
     for lvl, msg in active_alerts:
         st.markdown(f'<div class="alert-box-{lvl}">{msg}</div>', unsafe_allow_html=True)
 
-    total_net_pnl = total_port_val - total_port_cost - (total_port_val * fee_rate)
+    total_net_pnl = total_port_val - total_port_cost - ((total_port_cost + total_port_val) * fee_rate)
     total_pnl_pct = ((total_net_pnl / total_port_cost) * 100.0) if total_port_cost > 0 else 0.0
     open_risk_pct = (total_open_risk / max(1.0, total_port_val)) * 100.0 if total_port_val > 0 else 0.0
 
@@ -2804,6 +2806,8 @@ with tab_portfolio:
             else:
                 st.info(f"✅ تم استخراج **{len(parsed_ops)}** عملية من مستندات ثاندر — راجع الجدول أو عدّل أي رقم قبل الاعتماد:")
                 edited_ops = st.data_editor(pd.DataFrame(parsed_ops), use_container_width=True, hide_index=True, num_rows="dynamic")
+                if (edited_ops["الكمية"] <= 0).any():
+                    st.warning("⚠️ فيه عمليات الكمية بتاعتها 0 (الملف ماكانش فيه كمية واضحة). اكتب الكمية الصحيحة، وإلا السطر هيتجاهل.")
                 if st.button("🚀 اعتماد العمليات وتحديث المحفظة والسحابة فوراً", type="primary", use_container_width=True):
                     applied_cnt = 0
                     for _, op in edited_ops.iterrows():
@@ -3669,7 +3673,7 @@ alter table tg_alerts_log disable row level security;
         st.session_state["cfg_capital"] = st.number_input("💰 رأس المال للمقترحات (ج.م):", min_value=5000, value=capital, step=5000)
         st.session_state["cfg_risk_pct"] = st.slider("🛡️ نسبة المخاطرة في الصفقة الواحدة (%):", 0.5, 5.0, risk_pct, 0.25)
         st.session_state["cfg_min_turnover"] = st.number_input("💧 الحد الأدنى للسيولة اليومية (مليون ج.م):", 0.0, 100.0, min_turnover_m, 0.25)
-        fee_choice = st.radio("💳 شريحة عمولة Thndr:", ["أول 50 صفقة بالشهر (~0.16%)", "أكثر من 50 صفقة (~0.37%)"], index=(0 if fee_rate == 0.0016 else 1))
+        fee_choice = st.radio("💳 شريحة عمولة Thndr:", ["Thndr Trader — أول 50 أمر بالشهر (0.08% لكل جانب ≈ 0.16% ذهاب وعودة)", "أكثر من 50 أمر (0.18% لكل جانب ≈ 0.37% ذهاب وعودة)"], index=(0 if fee_rate == core.FEE_PER_SIDE_TRADER else 1))
         st.session_state["cfg_fee_tier"] = "0.16%" if "0.16%" in fee_choice else "0.37%"
         st.session_state["cfg_min_score"] = st.slider("🎯 الحد الأدنى للسكور في جدول الرادار:", 0, 100, min_score, 5)
         st.session_state["cfg_alert_buf"] = st.slider("🔔 حساسية تنبيه قرب الوقف/الهدف (%):", 0.5, 8.0, alert_buffer_pct, 0.5)

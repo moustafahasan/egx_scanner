@@ -1,0 +1,14 @@
+# أسرار — ممنوع ترفع
+.env
+*pass*.txt
+freellmapi-mcp.json
+.streamlit/secrets.toml
+# ملفات محلية / مؤقتة
+__pycache__/
+*.pyc
+.tg_offset
+*_cache.json
+my_egx_portfolio*.json
+*_err.txt
+ollama_pull*.txt
+_backup_*/
