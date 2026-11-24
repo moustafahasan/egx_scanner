@@ -1403,6 +1403,124 @@ def fetch_commodities() -> dict:
     return out
 
 
+def analyze_candlestick_patterns(df: pd.DataFrame) -> dict:
+    """Auto-detect candlestick patterns (V11.4)."""
+    if df is None or len(df) < 5:
+        return {"patterns": [], "verdict": "بيانات غير كافية"}
+    sub = df.tail(10).copy()
+    patterns = []
+    for i in range(1, len(sub)):
+        o, h, l, c = float(sub["Open"].iloc[i]), float(sub["High"].iloc[i]), float(sub["Low"].iloc[i]), float(sub["Close"].iloc[i])
+        po, pc = float(sub["Open"].iloc[i-1]), float(sub["Close"].iloc[i-1])
+        body = abs(c - o)
+        rng = max(1e-6, h - l)
+        upper = h - max(o, c)
+        lower = min(o, c) - l
+        # Hammer (bullish)
+        if lower >= 2 * body and upper <= body and c > o:
+            patterns.append({"التاريخ": str(sub.index[i])[:10], "النمط": "🔨 Hammer (مطرقة — انعكاس صعودي)", "السعر": round(c, 4)})
+        # Shooting star (bearish)
+        if upper >= 2 * body and lower <= body and c < o:
+            patterns.append({"التاريخ": str(sub.index[i])[:10], "النمط": "⭐ Shooting Star (نجمة — انعكاس هابط)", "السعر": round(c, 4)})
+        # Doji
+        if body <= 0.1 * rng and rng > 0:
+            patterns.append({"التاريخ": str(sub.index[i])[:10], "النمط": "✚ Doji (دوجي — تردد)", "السعر": round(c, 4)})
+        # Bullish engulfing
+        if c > o and pc < po and c > po and o < pc and body > abs(pc - po):
+            patterns.append({"التاريخ": str(sub.index[i])[:10], "النمط": "🟢 Bullish Engulfing (ابتلاع صعودي)", "السعر": round(c, 4)})
+        # Bearish engulfing
+        if c < o and pc > po and c < po and o > pc and body > abs(pc - po):
+            patterns.append({"التاريخ": str(sub.index[i])[:10], "النمط": "🔴 Bearish Engulfing (ابتلاع هابط)", "السعر": round(c, 4)})
+        # Morning star (3-candle bullish)
+        if i >= 2:
+            o2, c2 = float(sub["Open"].iloc[i-2]), float(sub["Close"].iloc[i-2])
+            o1, c1 = float(sub["Open"].iloc[i-1]), float(sub["Close"].iloc[i-1])
+            if c2 < o2 and abs(c1 - o1) < 0.3 * abs(c2 - o2) and c > o and c > (o2 + c2) / 2:
+                patterns.append({"التاريخ": str(sub.index[i])[:10], "النمط": "🌅 Morning Star (نجمة صباحية — انعكاس صعودي)", "السعر": round(c, 4)})
+        # Evening star (3-candle bearish)
+        if i >= 2:
+            o2, c2 = float(sub["Open"].iloc[i-2]), float(sub["Close"].iloc[i-2])
+            o1, c1 = float(sub["Open"].iloc[i-1]), float(sub["Close"].iloc[i-1])
+            if c2 > o2 and abs(c1 - o1) < 0.3 * abs(c2 - o2) and c < o and c < (o2 + c2) / 2:
+                patterns.append({"التاريخ": str(sub.index[i])[:10], "النمط": "🌆 Evening Star (نجمة مسائية — انعكاس هابط)", "السعر": round(c, 4)})
+    if not patterns:
+        return {"patterns": [], "verdict": "لا توجد أنماط شموع واضحة في آخر 10 جلسات."}
+    bull = sum(1 for p in patterns if "صعود" in p["النمط"] or "Bullish" in p["النمط"] or "Morning" in p["النمط"])
+    bear = sum(1 for p in patterns if "هابط" in p["النمط"] or "Bearish" in p["النمط"] or "Evening" in p["النمط"])
+    if bull > bear:
+        verdict = "🟢 ميل صعودي (أنماط صعودية)"
+    elif bear > bull:
+        verdict = "🔴 ميل هابطي (أنماط هابطة)"
+    else:
+        verdict = "🟡 تردد (أنماط مختلطة)"
+    return {"patterns": patterns[-8:], "verdict": verdict}
+
+
+def analyze_support_resistance(df: pd.DataFrame, lookback: int = 60) -> dict:
+    """Auto-detect support/resistance levels from pivots (V11.4)."""
+    if df is None or len(df) < 20:
+        return {"levels": [], "verdict": "بيانات غير كافية"}
+    sub = df.tail(lookback).copy()
+    curr = float(sub["Close"].iloc[-1])
+    pivs = extract_zigzag_pivots(sub, pct_thresh=0.03)
+    highs = [p["price"] for p in pivs if p["type"] == "H"]
+    lows = [p["price"] for p in pivs if p["type"] == "L"]
+    # Cluster levels (round to nearest 0.5%)
+    def cluster(vals):
+        if not vals:
+            return []
+        vals = sorted(vals)
+        clusters = []
+        for v in vals:
+            if clusters and abs(v - clusters[-1][0]) / max(1e-6, clusters[-1][0]) < 0.015:
+                clusters[-1][1] += 1
+                clusters[-1][0] = (clusters[-1][0] * (clusters[-1][1]-1) + v) / clusters[-1][1]
+            else:
+                clusters.append([v, 1])
+        return sorted(clusters, key=lambda x: -x[1])
+    h_clusters = cluster(highs)
+    l_clusters = cluster(lows)
+    levels = []
+    for price, cnt in h_clusters[:4]:
+        levels.append({"المستوى": round(price, 4), "النوع": "مقاومة ⬆️", "اللمسات": cnt, "البعد %": round((price - curr) / curr * 100, 2)})
+    for price, cnt in l_clusters[:4]:
+        levels.append({"المستوى": round(price, 4), "النوع": "دعم ⬇️", "اللمسات": cnt, "البعد %": round((price - curr) / curr * 100, 2)})
+    levels.sort(key=lambda x: x["المستوى"])
+    # verdict
+    nearest_sup = max([l["المستوى"] for l in levels if l["النوع"].startswith("دعم") and l["المستوى"] < curr], default=None)
+    nearest_res = min([l["المستوى"] for l in levels if l["النوع"].startswith("مقاومة") and l["المستوى"] > curr], default=None)
+    if nearest_sup and nearest_res:
+        verdict = "🟡 within range (%.2f — %.2f)" % (nearest_sup, nearest_res)
+    elif nearest_res:
+        verdict = "🔴 below resistance (%.2f)" % nearest_res
+    elif nearest_sup:
+        verdict = "🟢 above support (%.2f)" % nearest_sup
+    else:
+        verdict = "⚪ no clear levels"
+    return {"levels": levels, "verdict": verdict, "nearest_support": nearest_sup, "nearest_resistance": nearest_res}
+
+
+def compute_gann_simple(pivot_date, pivot_price, is_pivot_low, current_price):
+    """Simplified Gann (V11.4): Square of 9 price levels + next 3 time cycles. No planetary."""
+    sqrt_p = (pivot_price ** 0.5)
+    sq9 = []
+    for ang in [45, 90, 135, 180, 225, 270, 315, 360]:
+        step = ang / 180.0
+        target = (sqrt_p + step) ** 2 if is_pivot_low else max(0.01, sqrt_p - step) ** 2
+        sq9.append({"الزاوية": str(ang) + "°", "المستوى": round(target, 4), "النوع": "مقاومة ⬆️" if is_pivot_low else "دعم ⬇️", "البعد %": round((target - current_price) / current_price * 100, 2)})
+    # time cycles: next 3 upcoming
+    today = get_cairo_now().date()
+    cycles = [45, 90, 180]
+    time_targets = []
+    for cyc in cycles:
+        target_dt = pivot_date + timedelta(days=cyc)
+        diff = (target_dt - today).days
+        if -30 <= diff <= 180:
+            status = "🔥 نافذة انعكاس نشطة!" if abs(diff) <= 5 else ("بعد %d يوم" % diff if diff > 0 else "مضى %d يوم" % abs(diff))
+            time_targets.append({"الدورة": "دورة %d يوم" % cyc, "التاريخ": target_dt, "الحالة": status})
+    return sq9, time_targets
+
+
 def score_stock_from_tv(q: dict, market_median_perf1m: float, capital: float, risk_pct: float, fee_rate: float, session_progress: float) -> dict:
     sym = q["symbol"]
     close = q["close"]
@@ -2918,16 +3036,16 @@ with tab_lab:
         </div>
         """, unsafe_allow_html=True)
 
-        t_flow, t_smc, t_wyk, t_cpr, t_harm, t_ew, t_tech, t_fund, t_gann, t_news, t_bt, t_upload = st.tabs([
+        t_flow, t_smc, t_wyk, t_cpr, t_candle, t_sr, t_tech, t_fund, t_gann, t_news, t_bt, t_upload = st.tabs([
             "⚡ تدفق",
             "🏦 SMC",
             "🐋 وايكوف",
             "🎯 CPR",
-            "🦋 توافقي",
-            "🌊 إليوت",
+            "🕯️ شموع",
+            "📏 دعم/مقاومة",
             "📈 شارت",
             "📊 مالي",
-            "🪐 جان",
+            "🪐 جان (مبسط)",
             "📰 أخبار",
             "🧪 Backtest",
             "📥 رفع بيانات"
@@ -3118,81 +3236,49 @@ with tab_lab:
                     </div>
                     """, unsafe_allow_html=True)
 
-        # 5) النماذج التوافقية
-        with t_harm:
-            df_h = fetch_single_stock_history(selected_data["Ticker"])
-            if df_h.empty or len(df_h) < 50:
-                st.info("ℹ️ البيانات التاريخية غير كافية لرصد النماذج التوافقية.")
+        # 5) Candlestick Patterns (V11.4)
+        with t_candle:
+            st.markdown("#### 🕯️ أنماط الشموع (Candlestick Patterns) — V11.4")
+            if _lab_df.empty or len(_lab_df) < 10:
+                st.info("ℹ️ البيانات التاريخية غير كافية.")
             else:
-                harm = analyze_harmonic_patterns(df_h)
-                c1, c2 = st.columns([2.1, 1])
-                with c1:
-                    sub_hm = df_h.tail(160)
-                    fig_hm = go.Figure(go.Candlestick(x=sub_hm.index, open=sub_hm["Open"], high=sub_hm["High"], low=sub_hm["Low"], close=sub_hm["Close"], name="السعر"))
-                    if harm["points"]:
-                        pts = harm["points"]
-                        lbls = ["X", "A", "B", "C", "D"]
-                        fig_hm.add_trace(go.Scatter(
-                            x=[p["date"] for p in pts], y=[p["price"] for p in pts],
-                            mode="lines+markers+text", line=dict(color="#FACC15", width=3),
-                            marker=dict(size=10, color="#38BDF8"),
-                            text=[f"{l} ({p['price']:.4f})" for l, p in zip(lbls, pts)],
-                            textposition="top center", name="XABCD"
-                        ))
-                    if harm["prz_low"] and harm["prz_high"]:
-                        fig_hm.add_hrect(y0=harm["prz_low"], y1=harm["prz_high"], fillcolor="rgba(250,204,21,0.20)", line_color="#FACC15", annotation_text="PRZ")
-                    fig_hm.update_layout(title=f"🦋 مسح النماذج التوافقية: {selected_symbol}", height=500, xaxis_rangeslider_visible=False, template=TPL, paper_bgcolor="#FFFFFF", plot_bgcolor="#F8FAFC", margin=dict(l=10, r=10, t=40, b=10))
-                    st.plotly_chart(fig_hm, use_container_width=True)
-                with c2:
-                    st.markdown(f"""
-                    <div class="pro-card">
-                        <h4 class="txt-cyan" style="margin-top:0;">🦋 تشخيص النموذج التوافقي</h4>
-                        <p><span class="{harm['badge_cls']}">{harm['pattern_name']}</span></p>
-                        <p class="txt-white" style="font-size:14px;">{harm['notes']}</p>
-                        <hr style="border-color:#26334D;">
-                        <p class="txt-white"><b>منطقة الانعكاس (PRZ):</b> <span class="txt-gold">{harm.get('prz_low', '—')} — {harm.get('prz_high', '—')}</span></p>
-                        <p class="txt-white"><b>الهدف الأول (38.2% AD):</b> <span class="txt-green">{harm.get('target_1', '—')}</span></p>
-                        <p class="txt-white"><b>الهدف الثاني (61.8% AD):</b> <span class="txt-green">{harm.get('target_2', '—')}</span></p>
-                    </div>
-                    """, unsafe_allow_html=True)
+                cp = analyze_candlestick_patterns(_lab_df)
+                st.markdown("**Verdict:** %s" % cp["verdict"])
+                if cp["patterns"]:
+                    st.dataframe(pd.DataFrame(cp["patterns"]), use_container_width=True, hide_index=True)
+                else:
+                    st.info(cp["verdict"])
+                # Show last 5 candles
+                sub_c = _lab_df.tail(10)
+                import plotly.graph_objects as _go
+                fig_c = _go.Figure(_go.Candlestick(x=sub_c.index, open=sub_c["Open"], high=sub_c["High"], low=sub_c["Low"], close=sub_c["Close"], name="السعر"))
+                fig_c.update_layout(title="Last 10 Candles", height=320, template=TPL, paper_bgcolor="#FFFFFF", plot_bgcolor="#F8FAFC", xaxis_rangeslider_visible=False, margin=dict(l=10,r=10,t=40,b=10))
+                st.plotly_chart(fig_c, use_container_width=True)
 
-        # 6) موجات إليوت
-        with t_ew:
-            df_ew = _lab_df
-            if df_ew.empty or len(df_ew) < 25:
-                st.info("ℹ️ البيانات التاريخية غير كافية لترقيم موجات إليوت.")
+        with t_sr:
+            st.markdown("#### 📏 دعم/مقاومة (Support/Resistance) — V11.4")
+            if _lab_df.empty or len(_lab_df) < 20:
+                st.info("ℹ️ البيانات التاريخية غير كافية.")
             else:
-                deg = st.radio("🎚️ حساسية الموجات:", ["متوسطة (5%)", "قصيرة (3%)", "رئيسية (8%)"], horizontal=True)
-                pct_v = 0.03 if "3%" in deg else (0.08 if "8%" in deg else 0.05)
-                ew_res = analyze_elliott_waves(df_ew.tail(220), pct_thresh=pct_v)
-                c1, c2 = st.columns([2.1, 1])
-                with c1:
-                    sub_e = df_ew.tail(220)
-                    fig_e = go.Figure(go.Candlestick(x=sub_e.index, open=sub_e["Open"], high=sub_e["High"], low=sub_e["Low"], close=sub_e["Close"], name="السعر"))
-                    lp = ew_res["labeled_pivots"]
-                    if lp:
-                        fig_e.add_trace(go.Scatter(x=[p["date"] for p in lp], y=[p["price"] for p in lp], mode="lines+markers+text", line=dict(color="#38BDF8", width=2.8), marker=dict(size=9, color="#FACC15"), text=[p.get("label", "") for p in lp], textposition="top center", name="Waves"))
-                    fig_e.add_hline(y=ew_res["invalidation"], line_dash="dash", line_color="#F87171", annotation_text=f"إلغاء: {ew_res['invalidation']}")
-                    fig_e.add_hline(y=ew_res["target_1"], line_dash="dot", line_color="#4ADE80", annotation_text=f"هدف 1: {ew_res['target_1']}")
-                    fig_e.update_layout(title=f"🌊 خريطة موجات إليوت: {selected_symbol}", height=500, xaxis_rangeslider_visible=False, template=TPL, paper_bgcolor="#FFFFFF", plot_bgcolor="#F8FAFC", margin=dict(l=10, r=10, t=40, b=10))
-                    st.plotly_chart(fig_e, use_container_width=True)
-                with c2:
-                    st.markdown(f"""
-                    <div class="pro-card">
-                        <h4 class="txt-cyan" style="margin-top:0;">🧭 القراءة الموجية</h4>
-                        <p><span class="{ew_res['badge_cls']}">{ew_res['wave_name']}</span></p>
-                        <p class="txt-white">{ew_res['summary']}</p>
-                        <hr style="border-color:#26334D;">
-                        <p class="txt-white"><b>نقطة الإلغاء:</b> <span class="txt-red">{ew_res['invalidation']}</span></p>
-                        <p class="txt-white"><b>الهدف الأول:</b> <span class="txt-green">{ew_res['target_1']}</span> | <b>الثاني:</b> <span class="txt-gold">{ew_res['target_2']}</span></p>
-                    </div>
-                    """, unsafe_allow_html=True)
-                    if ew_res["rules_check"]:
-                        df_r = pd.DataFrame(ew_res["rules_check"], columns=["القاعدة", "القيمة", "الحالة"])
-                        df_r["الحالة"] = df_r["الحالة"].map({True: "✅ محقق", False: "⚠️ مراقبة"})
-                        st.dataframe(df_r, use_container_width=True, hide_index=True)
+                sr = analyze_support_resistance(_lab_df)
+                st.markdown("**Verdict:** %s" % sr["verdict"])
+                if sr["levels"]:
+                    st.dataframe(pd.DataFrame(sr["levels"]), use_container_width=True, hide_index=True)
+                if sr["nearest_support"]:
+                    st.success("🟢 أقرب دعم: %s" % sr["nearest_support"])
+                if sr["nearest_resistance"]:
+                    st.warning("🔴 أقرب مقاومة: %s" % sr["nearest_resistance"])
+                # Show chart with levels
+                sub_sr = _lab_df.tail(60)
+                import plotly.graph_objects as _go
+                fig_sr = _go.Figure(_go.Candlestick(x=sub_sr.index, open=sub_sr["Open"], high=sub_sr["High"], low=sub_sr["Low"], close=sub_sr["Close"], name="السعر"))
+                if sr["nearest_support"]:
+                    fig_sr.add_hline(y=sr["nearest_support"], line_dash="dash", line_color="#22C55E", annotation_text="Support")
+                if sr["nearest_resistance"]:
+                    fig_sr.add_hline(y=sr["nearest_resistance"], line_dash="dash", line_color="#EF4444", annotation_text="Resistance")
+                fig_sr.update_layout(title="Support/Resistance Levels", height=400, template=TPL, paper_bgcolor="#FFFFFF", plot_bgcolor="#F8FAFC", xaxis_rangeslider_visible=False, margin=dict(l=10,r=10,t=40,b=10))
+                st.plotly_chart(fig_sr, use_container_width=True)
 
-        # 7) الشارت الفني وخطة التنفيذ
         with t_tech:
             df_h = fetch_single_stock_history(selected_data["Ticker"])
             c1, c2 = st.columns([2.1, 1])
@@ -3279,25 +3365,19 @@ with tab_lab:
                 r90 = df_t.tail(90)
                 low_idx = r90["Low"].idxmin()
                 g1, g2, g3 = st.columns(3)
-                piv_d = g1.date_input("📅 تاريخ القاع/القمة الارتكازية:", value=low_idx.date())
-                piv_p = g2.number_input("💲 سعر الارتكاز:", min_value=0.01, value=float(r90.loc[low_idx, "Low"]), step=0.05)
-                is_low = g3.radio("نوع الارتكاز:", ["قاع صاعد", "قمة هابطة"], horizontal=True) == "قاع صاعد"
+                piv_d = g1.date_input("📅 تاريخ القاع/القمة الارتكازية:", value=low_idx.date(), key="gann_piv_d")
+                piv_p = g2.number_input("💲 سعر الارتكاز:", min_value=0.01, value=float(r90.loc[low_idx, "Low"]), step=0.05, key="gann_piv_p")
+                is_low = g3.radio("نوع الارتكاز:", ["قاع صاعد", "قمة هابطة"], horizontal=True, key="gann_is_low") == "قاع صاعد"
 
-                sq9, g_times, aspects = compute_gann_and_planetary(piv_d, piv_p, is_low, selected_data["الإغلاق"], False)
-                today_p = get_planetary_longitudes(get_cairo_now().replace(tzinfo=None))
-                p_rows = [{"الجرم": k, "الدرجة": f"{v:.1f}°", "البرج": deg_to_zodiac(v), "خط السعر": convert_deg_to_price(v, selected_data["الإغلاق"])} for k, v in today_p.items()]
-
-                gc1, gc2 = st.columns(2)
-                with gc1:
-                    st.markdown("##### 📐 مربع التسعة والدورات الزمنية لجان")
-                    if g_times:
-                        st.dataframe(pd.DataFrame(g_times), use_container_width=True, hide_index=True)
-                    st.dataframe(pd.DataFrame(sq9), use_container_width=True, hide_index=True)
-                with gc2:
-                    st.markdown("##### 🪐 خطوط الكواكب والزوايا الفلكية القادمة")
-                    st.dataframe(pd.DataFrame(p_rows), use_container_width=True, hide_index=True)
-                    if aspects:
-                        st.dataframe(pd.DataFrame(aspects), use_container_width=True, hide_index=True)
+                sq9, g_times = compute_gann_simple(piv_d, piv_p, is_low, selected_data["الإغلاق"])
+                st.markdown("##### 📐 مربع التسعة (Square of 9) — مستويات سعرية")
+                st.dataframe(pd.DataFrame(sq9), use_container_width=True, hide_index=True)
+                st.markdown("##### ⏱️ دورات جان (Time Cycles) — متى تحدث انعكاسات؟")
+                if g_times:
+                    st.dataframe(pd.DataFrame(g_times), use_container_width=True, hide_index=True)
+                else:
+                    st.info("لا توجد دورات في النطاق (±30 إلى 180 يوم).")
+                st.caption("💡 مربع التسعة = مستويات دعم/مقاومة (سعر). دورات جان = تواريخ انعكاس (زمن). استخدمها لتحديد: متى (time) + أين (price).")
 
         # 10) الرادار الخبري
         with t_news:
