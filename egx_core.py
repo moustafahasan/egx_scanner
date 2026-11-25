@@ -8,12 +8,15 @@ from datetime import datetime, date, time as dtime, timedelta, timezone
 
 # ---------------------------------------------------------------
 # الرسوم (لكل جانب: شراء أو بيع)
-# Thndr Trader: عمولة ثاندر بتترد لأول 50 أمر في الشهر، وبيفضل الرسوم الحكومية بس:
-#   EGX 0.01% + MCDR 0.01% + الرقابة 0.005% + تأمين المخاطر 0.005% + دمغة 0.05% = 0.08%
-# بعد الـ 50 أمر: + عمولة ثاندر 0.1% (والـ 2 جنيه الثابتة مش محسوبة هنا) = 0.18%
+# V11.5 — من فاتورة ثاندر الفعلية (24/11/2026):
+#   نسبة: سمسرة وحفظ 0.1% + دمغة 0.05% + EGX 0.01% + MCDR 0.01% + تأمين مخاطر 0.005% = 0.175%
+#   ثابت لكل أمر: رسوم أمر 2 ج + الرقابة المالية 1 ج = 3 ج
+# مثال: صفقة 5,151 ج => 5,151×0.175% + 3 = 12.0 ج (الفاتورة: 12.03)
 # ---------------------------------------------------------------
-FEE_PER_SIDE_TRADER = 0.0008
-FEE_PER_SIDE_STANDARD = 0.0018
+FEE_PCT_PER_SIDE = 0.00175
+FEE_FIXED_PER_ORDER = 3.0
+FEE_PER_SIDE_TRADER = FEE_PCT_PER_SIDE      # توافق مع الكود القديم
+FEE_PER_SIDE_STANDARD = FEE_PCT_PER_SIDE
 
 # ---------------------------------------------------------------
 # مواعيد الجلسة (القاهرة)
@@ -88,12 +91,23 @@ def in_window(now: datetime, start_hhmm: str, end_hhmm: str) -> bool:
 # ---------------------------------------------------------------
 # الحسابات
 # ---------------------------------------------------------------
-def round_trip_fees(cost: float, proceeds: float, fee_per_side: float) -> float:
-    return (cost + proceeds) * fee_per_side
+def side_fee(value: float, fee_per_side: float = FEE_PCT_PER_SIDE, fixed: float = FEE_FIXED_PER_ORDER) -> float:
+    """رسوم جانب واحد (شراء أو بيع): نسبة من القيمة + مبلغ ثابت لكل أمر."""
+    return value * fee_per_side + fixed if value > 0 else 0.0
 
 
-def breakeven_price(buy_price: float, fee_per_side: float) -> float:
-    return round(buy_price * (1.0 + 2.0 * fee_per_side), 4)
+def round_trip_fees(cost: float, proceeds: float, fee_per_side: float = FEE_PCT_PER_SIDE,
+                    fixed: float = FEE_FIXED_PER_ORDER) -> float:
+    return side_fee(cost, fee_per_side, fixed) + side_fee(proceeds, fee_per_side, fixed)
+
+
+def breakeven_price(buy_price: float, fee_per_side: float = FEE_PCT_PER_SIDE, shares: int = 0,
+                    fixed: float = FEE_FIXED_PER_ORDER) -> float:
+    """سعر البيع اللي يغطي رسوم الشراء والبيع. من غير عدد الأسهم بيتجاهل المبلغ الثابت."""
+    p = fee_per_side
+    if shares and shares > 0:
+        return round((buy_price * shares * (1.0 + p) + 2.0 * fixed) / (shares * (1.0 - p)), 4)
+    return round(buy_price * (1.0 + p) / (1.0 - p), 4)
 
 
 def initial_levels(buy_price: float, atr: float) -> dict:

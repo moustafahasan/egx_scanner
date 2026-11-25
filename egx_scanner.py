@@ -614,11 +614,12 @@ def load_closed_trades(force_refresh: bool = False):
     st.session_state["cached_closed"] = local_c
     return local_c
 
-def record_closed_trade(symbol: str, shares: int, buy_price: float, sell_price: float, fee_rate: float):
+def record_closed_trade(symbol: str, shares: int, buy_price: float, sell_price: float, fee_rate: float,
+                        fee_fixed: float = core.FEE_FIXED_PER_ORDER):
     sym = symbol.upper().replace(".CA", "").strip()
     cost = shares * buy_price
     proceeds = shares * sell_price
-    fees = (cost + proceeds) * fee_rate
+    fees = core.round_trip_fees(cost, proceeds, fee_rate, fee_fixed)
     net_pnl = (proceeds - cost) - fees
     pnl_pct = (net_pnl / max(0.01, cost)) * 100.0
     row = {
@@ -1017,7 +1018,8 @@ def fetch_commodities() -> dict:
     return out
 
 
-def score_stock_from_tv(q: dict, market_median_perf1m: float, capital: float, risk_pct: float, fee_rate: float, session_progress: float) -> dict:
+def score_stock_from_tv(q: dict, market_median_perf1m: float, capital: float, risk_pct: float, fee_rate: float, session_progress: float,
+                        fee_fixed: float = core.FEE_FIXED_PER_ORDER) -> dict:
     sym = q["symbol"]
     close = q["close"]
     pct_change = q["change"]
@@ -1086,7 +1088,7 @@ def score_stock_from_tv(q: dict, market_median_perf1m: float, capital: float, ri
     risk_amount = capital * (risk_pct / 100.0)
     shares = int(risk_amount // risk_per_share) if risk_per_share > 0 else 0
     position_value = shares * entry
-    net_profit_tp1 = (shares * (tp1 - entry)) - ((position_value + shares * tp1) * fee_rate)
+    net_profit_tp1 = (shares * (tp1 - entry)) - core.round_trip_fees(position_value, shares * tp1, fee_rate, fee_fixed)
 
     return {
         "الرمز": sym,
@@ -1355,7 +1357,8 @@ except Exception as _ce:
 capital = int(st.session_state.get("cfg_capital", 100000))
 risk_pct = float(st.session_state.get("cfg_risk_pct", 1.5))
 min_turnover_m = float(st.session_state.get("cfg_min_turnover", 0.5))
-fee_rate = core.FEE_PER_SIDE_TRADER if st.session_state.get("cfg_fee_tier", "0.16%") == "0.16%" else core.FEE_PER_SIDE_STANDARD
+fee_rate = float(st.session_state.get("cfg_fee_pct", core.FEE_PCT_PER_SIDE * 100)) / 100.0
+fee_fixed = float(st.session_state.get("cfg_fee_fixed", core.FEE_FIXED_PER_ORDER))
 min_score = int(st.session_state.get("cfg_min_score", 45))
 alert_buffer_pct = float(st.session_state.get("cfg_alert_buf", 2.5))
 only_leaders = bool(st.session_state.get("cfg_only_leaders", False))
@@ -1425,7 +1428,7 @@ all_analyzed_map = {}
 scanner_results = []
 
 for sym, q_data in raw_egx_tv_map.items():
-    analyzed = score_stock_from_tv(q_data, market_median_perf1m, capital, risk_pct, fee_rate, session_info["progress"])
+    analyzed = score_stock_from_tv(q_data, market_median_perf1m, capital, risk_pct, fee_rate, session_info["progress"], fee_fixed)
     # V11.5: كان هنا تحميل تاريخ سنتين من Yahoo لكل سهم (حتى 350 طلب) في كل تحديث — ده سبب بطء الدخول.
     # التاريخ بيتحمل دلوقتي للسهم اللي بتفتحه في المختبر بس.
     analyzed["توفر البيانات"] = "📡 Live"
@@ -1472,6 +1475,7 @@ filtered_results = [r for r in scanner_results if r["السكور"] >= min_score
 portfolio_rows = []
 active_alerts = []
 total_port_cost, total_port_val, total_open_risk = 0.0, 0.0, 0.0
+total_port_fees = 0.0
 today_str = get_cairo_now().strftime("%Y-%m-%d")
 sent_tg_log = load_sent_tg_log(today_str, force_refresh=force_sync)
 tg_phase = core.session_phase()
@@ -1504,7 +1508,7 @@ for item in my_portfolio:
     # V11.5: لو المستويات مش متخزنة وعندنا بيانات حية، نخزنها مرة واحدة
     sl_updated = bool(sinfo) and (user_sl <= 0 or user_tp1 <= 0 or user_tp2 <= 0)
     if trailing_on:
-        be_price = round(buy_p * (1.0 + fee_rate * 2.0), 4)
+        be_price = core.breakeven_price(buy_p, fee_rate, shares, fee_fixed)
         if curr_p >= tp1 and trailing_stage < 1 and be_price < curr_p:
             sl = max(sl, be_price)
             trailing_stage = 1
@@ -1529,8 +1533,10 @@ for item in my_portfolio:
     trail_badge = "⏸️ معطّل" if not trailing_on else ("🚀 ملاحقة TP2" if trailing_stage >= 2 else ("🛡️ مؤمّن (تعادل)" if trailing_stage == 1 else "⏳ بانتظار TP1"))
     cost_val = shares * buy_p
     mkt_val = shares * curr_p
-    net_pnl = (mkt_val - cost_val) - ((cost_val + mkt_val) * fee_rate)
+    _pos_fees = core.round_trip_fees(cost_val, mkt_val, fee_rate, fee_fixed)
+    net_pnl = (mkt_val - cost_val) - _pos_fees
     net_pnl_pct = (net_pnl / cost_val) * 100.0
+    total_port_fees += _pos_fees
     total_port_cost += cost_val
     total_port_val += mkt_val
     total_open_risk += max(0.0, shares * (curr_p - sl))
@@ -1682,7 +1688,7 @@ def _add_dialog(sym):
 # ------------------------------------------------------------------------------
 if VIEW == "command":
     _mood = ui.mood_score(market_breadth_pct, market_vwap_breadth)
-    _net_all = total_port_val - total_port_cost - ((total_port_cost + total_port_val) * fee_rate)
+    _net_all = total_port_val - total_port_cost - total_port_fees
     _day_pnl = sum(p["الكمية"] * p["السعر الحالي"] * (p["تغير اليوم %"] / (100 + p["تغير اليوم %"])) for p in portfolio_rows if p["تغير اليوم %"] > -100)
     _risk_pct = total_open_risk / max(1.0, capital) * 100
     k1, k2, k3, k4 = st.columns([1.35, 1, 1, 1])
@@ -1785,7 +1791,7 @@ if VIEW == "portfolio":
     for lvl, msg in active_alerts:
         st.markdown(f'<div class="alert-box-{lvl}">{msg}</div>', unsafe_allow_html=True)
 
-    total_net_pnl = total_port_val - total_port_cost - ((total_port_cost + total_port_val) * fee_rate)
+    total_net_pnl = total_port_val - total_port_cost - total_port_fees
     total_pnl_pct = ((total_net_pnl / total_port_cost) * 100.0) if total_port_cost > 0 else 0.0
     open_risk_pct = (total_open_risk / max(1.0, total_port_val)) * 100.0 if total_port_val > 0 else 0.0
 
@@ -1872,7 +1878,7 @@ if VIEW == "portfolio":
             with ps2:
                 st.write(""); st.write("")
                 if st.button(f"🛡️ تأمين {port_sel} للتعادل", width="stretch"):
-                    be_val = round(p_item["متوسط الشراء"] * (1.0 + fee_rate * 2.0), 4)
+                    be_val = core.breakeven_price(p_item["متوسط الشراء"], fee_rate, p_item["الكمية"], fee_fixed)
                     if p_item["السعر الحالي"] <= be_val:
                         st.warning(f"⚠️ السعر الحالي ({p_item['السعر الحالي']}) أقل من أو يساوي نقطة التعادل ({be_val}).")
                     else:
@@ -1897,7 +1903,7 @@ if VIEW == "portfolio":
             with clc2:
                 st.write(""); st.write("")
                 if st.button(f"💰 إغلاق صفقة {port_sel} وتسجيلها في دفتر الصفقات", type="primary", width="stretch"):
-                    n_res, p_res = record_closed_trade(port_sel, p_item["الكمية"], p_item["متوسط الشراء"], exit_p, fee_rate)
+                    n_res, p_res = record_closed_trade(port_sel, p_item["الكمية"], p_item["متوسط الشراء"], exit_p, fee_rate, fee_fixed)
                     st.session_state["last_port_msg"] = f"✅ تم إغلاق صفقة {port_sel} ({p_item['اسم الشركة']}) بصافي {n_res:+,.0f} ج.م ({p_res:+.1f}%)!"
                     st.rerun()
 
@@ -2019,7 +2025,7 @@ if VIEW == "portfolio":
                                 ex_sh = int(ex_item["shares"])
                                 ex_bp = float(ex_item["buy_price"])
                                 sell_qty = min(ex_sh, qty_o)
-                                record_closed_trade(sym_o, sell_qty, ex_bp, prc_o, fee_rate)
+                                record_closed_trade(sym_o, sell_qty, ex_bp, prc_o, fee_rate, fee_fixed)
                                 if ex_sh > sell_qty:
                                     upsert_portfolio_item({**ex_item, "shares": ex_sh - sell_qty})
                                 applied_cnt += 1
@@ -2642,7 +2648,7 @@ if VIEW == "lab":
                 bt_risk = st.slider("نسبة المخاطرة %:", 0.5, 5.0, 1.5, 0.25, key="bt_risk")
             if st.button("🚀 تشغيل Backtest", key="bt_run_btn", type="primary"):
                 _df_bt = fetch_single_stock_history(all_analyzed_map[bt_sym]["Ticker"])
-                res = run_simple_backtest(_df_bt, capital=bt_cap, risk_pct=bt_risk, fee_rate=fee_rate)
+                res = run_simple_backtest(_df_bt, capital=bt_cap, risk_pct=bt_risk, fee_rate=fee_rate, fee_fixed=fee_fixed)
                 m = res["metrics"]
                 if not res["trades"]:
                     st.warning("⚠️ لا توجد صفقات في هذه الفترة.")
@@ -2916,8 +2922,13 @@ alter table tg_alerts_log disable row level security;
         st.session_state["cfg_capital"] = st.number_input("💰 رأس المال للمقترحات (ج.م):", min_value=5000, value=capital, step=5000)
         st.session_state["cfg_risk_pct"] = st.slider("🛡️ نسبة المخاطرة في الصفقة الواحدة (%):", 0.5, 5.0, risk_pct, 0.25)
         st.session_state["cfg_min_turnover"] = st.number_input("💧 الحد الأدنى للسيولة اليومية (مليون ج.م):", 0.0, 100.0, min_turnover_m, 0.25)
-        fee_choice = st.radio("💳 شريحة عمولة Thndr:", ["Thndr Trader — أول 50 أمر بالشهر (0.08% لكل جانب ≈ 0.16% ذهاب وعودة)", "أكثر من 50 أمر (0.18% لكل جانب ≈ 0.37% ذهاب وعودة)"], index=(0 if fee_rate == core.FEE_PER_SIDE_TRADER else 1))
-        st.session_state["cfg_fee_tier"] = "0.16%" if "0.16%" in fee_choice else "0.37%"
+        st.markdown("💳 **رسوم ثاندر لكل أمر (شراء أو بيع)** — الافتراضي من فاتورتك الفعلية")
+        _fc1, _fc2 = st.columns(2)
+        st.session_state["cfg_fee_pct"] = _fc1.number_input("نسبة من قيمة الصفقة (%)", 0.0, 1.0, round(fee_rate * 100, 4), 0.005, format="%.3f",
+                                                            help="سمسرة 0.1% + دمغة 0.05% + EGX 0.01% + MCDR 0.01% + تأمين 0.005% = 0.175%")
+        st.session_state["cfg_fee_fixed"] = _fc2.number_input("مبلغ ثابت لكل أمر (ج.م)", 0.0, 50.0, fee_fixed, 0.5,
+                                                              help="رسوم الأمر 2 ج + الرقابة المالية 1 ج = 3 ج")
+        st.caption(f"مثال: صفقة 10,000 ج ذهاب وعودة = {core.round_trip_fees(10000, 10000, fee_rate, fee_fixed):,.1f} ج رسوم")
         st.session_state["cfg_min_score"] = st.slider("🎯 الحد الأدنى للسكور في جدول الرادار:", 0, 100, min_score, 5)
         st.session_state["cfg_alert_buf"] = st.slider("🔔 حساسية تنبيه قرب الوقف/الهدف (%):", 0.5, 8.0, alert_buffer_pct, 0.5)
 

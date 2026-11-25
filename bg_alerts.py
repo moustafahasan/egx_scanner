@@ -19,8 +19,9 @@ SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "").strip()
 OWNER_USER_ID = os.environ.get("OWNER_USER_ID", "").strip()   # الـ UID بتاعك من Supabase Auth
 TG_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 TG_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
-# رسوم لكل جانب (شراء أو بيع). Thndr Trader = 0.08%. القيمة القديمة 0.0016 كانت بتتحسب مرتين.
-FEE_RATE = float(os.environ.get("THNDR_FEE_RATE", str(core.FEE_PER_SIDE_TRADER)))
+# رسوم لكل جانب (شراء أو بيع): نسبة + مبلغ ثابت لكل أمر (من فاتورة ثاندر — شوف egx_core).
+FEE_RATE = float(os.environ.get("THNDR_FEE_RATE") or core.FEE_PCT_PER_SIDE)
+FEE_FIXED = float(os.environ.get("THNDR_FEE_FIXED") or core.FEE_FIXED_PER_ORDER)
 ALERT_BUFFER_PCT = float(os.environ.get("ALERT_BUFFER_PCT", "2.5"))
 MIN_TURNOVER = float(os.environ.get("MIN_TURNOVER_EGP", "500000"))  # حد أدنى لقيمة التداول لإشارات الحيتان
 CLOSE_CHECK_FROM = os.environ.get("CLOSE_CHECK_FROM", "14:50")   # بعد الإغلاق + هامش تأخير البيانات
@@ -310,7 +311,7 @@ def handle_command(text: str, chat_id: str, market_map: dict, user_id: str):
         if not ok or not port:
             send_tg("💼 محفظتك فارغة حالياً في السحابة.", chat_id)
             return
-        tot_cost, tot_val = 0.0, 0.0
+        tot_cost, tot_val, tot_fees = 0.0, 0.0, 0.0
         lines = ["💼 <b>تقرير محفظتك اللحظي:</b>\n"]
         for item in port:
             sym = item["symbol"].upper()
@@ -322,8 +323,10 @@ def handle_command(text: str, chat_id: str, market_map: dict, user_id: str):
             cp = m.get("close", bp)
             cost = sh * bp
             val = sh * cp
-            pnl = (val - cost) - core.round_trip_fees(cost, val, FEE_RATE)
+            fees = core.round_trip_fees(cost, val, FEE_RATE, FEE_FIXED)
+            pnl = (val - cost) - fees
             pnl_pct = (pnl / max(0.01, cost)) * 100.0
+            tot_fees += fees
             tot_cost += cost
             tot_val += val
             icon = "🟢" if pnl >= 0 else "🔴"
@@ -332,7 +335,7 @@ def handle_command(text: str, chat_id: str, market_map: dict, user_id: str):
                 f"   الكمية: {sh} | شرائك: {bp} | الآن: <b>{cp}</b>\n"
                 f"   الربح: <b>{pnl:+,.0f} ج.م ({pnl_pct:+.1f}%)</b> | SL: {sl} | TP1: {tp1}"
             )
-        tot_pnl = (tot_val - tot_cost) - core.round_trip_fees(tot_cost, tot_val, FEE_RATE)
+        tot_pnl = (tot_val - tot_cost) - tot_fees
         tot_pct = (tot_pnl / max(0.01, tot_cost)) * 100.0
         lines.append(f"\n💰 <b>الإجمالي:</b> {tot_val:,.0f} ج.م | الصافي: <b>{tot_pnl:+,.0f} ج.م ({tot_pct:+.1f}%)</b>")
         send_tg("\n".join(lines), chat_id)
@@ -425,7 +428,7 @@ def handle_command(text: str, chat_id: str, market_map: dict, user_id: str):
         bp = float(ex_data[0]["buy_price"])
         cost = sh * bp
         proceeds = sh * sell_p
-        net_pnl = (proceeds - cost) - ((cost + proceeds) * FEE_RATE)
+        net_pnl = (proceeds - cost) - core.round_trip_fees(cost, proceeds, FEE_RATE, FEE_FIXED)
         pnl_pct = (net_pnl / max(0.01, cost)) * 100.0
 
         sb_request("POST", "closed_trades", payload=[{
@@ -453,7 +456,7 @@ def handle_command(text: str, chat_id: str, market_map: dict, user_id: str):
             send_tg(f"⚠️ السهم <b>{sym}</b> غير موجود في محفظتك.", chat_id)
             return
         bp = float(ex_data[0]["buy_price"])
-        be_sl = core.breakeven_price(bp, FEE_RATE)
+        be_sl = core.breakeven_price(bp, FEE_RATE, int(ex_data[0].get("shares") or 0), FEE_FIXED)
         sb_request("PATCH", f"portfolio?symbol=eq.{sym}&user_id=eq.{user_id}", payload={"stop_loss": be_sl, "trailing_stage": 1})
         send_tg(f"🛡️ <b>تم تأمين {sym} للتعادل!</b>\nوقف الخسارة الجديد: <b>{be_sl} ج.م</b>", chat_id)
         return
@@ -620,7 +623,7 @@ def run_auto_monitor(market_map: dict, now: datetime = None):
 
         # الوقف المتحرك (بأسعار الجلسة فقط)
         if live and tr_on:
-            be_p = core.breakeven_price(bp, FEE_RATE)
+            be_p = core.breakeven_price(bp, FEE_RATE, sh, FEE_FIXED)
             if cp >= tp1 and tr_stage < 1 and be_p < cp:
                 sl, tr_stage = max(sl, be_p), 1
                 patch.update(stop_loss=sl, trailing_stage=tr_stage)
@@ -635,7 +638,7 @@ def run_auto_monitor(market_map: dict, now: datetime = None):
         if patch:
             sb_request("PATCH", f"portfolio?symbol=eq.{sym}&user_id=eq.{uid}", payload=patch)
 
-        net_pnl = (cp - bp) * sh - core.round_trip_fees(bp * sh, cp * sh, FEE_RATE)
+        net_pnl = (cp - bp) * sh - core.round_trip_fees(bp * sh, cp * sh, FEE_RATE, FEE_FIXED)
         dist_sl = ((cp - sl) / cp) * 100.0
         dist_tp1 = ((tp1 - cp) / cp) * 100.0
 

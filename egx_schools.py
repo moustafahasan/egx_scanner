@@ -574,7 +574,8 @@ def add_egx_trading_days(start_dt: date, trading_days: int, holidays: set = None
 # =====================================================================
 # باك تيست واقعي
 # =====================================================================
-def run_simple_backtest(df, capital=100000.0, risk_pct=1.5, fee_rate=core.FEE_PER_SIDE_TRADER, slippage=0.002):
+def run_simple_backtest(df, capital=100000.0, risk_pct=1.5, fee_rate=core.FEE_PCT_PER_SIDE, slippage=0.002,
+                        fee_fixed=core.FEE_FIXED_PER_ORDER):
     """
     إشارة: إغلاق > EMA20 > EMA50 و RVOL >= 1.2.
     الدخول على افتتاح الجلسة التالية (مش على إغلاق شمعة الإشارة).
@@ -594,7 +595,7 @@ def run_simple_backtest(df, capital=100000.0, risk_pct=1.5, fee_rate=core.FEE_PE
         nonlocal cash, pos
         px = raw_exit * (1 - slippage)
         proceeds = pos["shares"] * px
-        fees = (pos["cost"] + proceeds) * fee_rate
+        fees = core.round_trip_fees(pos["cost"], proceeds, fee_rate, fee_fixed)
         pnl = proceeds - pos["cost"] - fees
         cash += proceeds - fees  # تكلفة الشراء اتخصمت وقت الدخول
         r_mult = pnl / max(1e-9, pos["risk_amt"])
@@ -613,7 +614,7 @@ def run_simple_backtest(df, capital=100000.0, risk_pct=1.5, fee_rate=core.FEE_PE
                 r_u = entry - sl
                 if r_u <= 0:
                     continue
-                shares = int(min(cash * risk_pct / 100.0 / r_u, cash / (entry * (1 + fee_rate))))
+                shares = int(min(cash * risk_pct / 100.0 / r_u, max(0.0, cash - 2 * fee_fixed) / (entry * (1 + fee_rate))))
                 if shares <= 0:
                     continue
                 cost = shares * entry
