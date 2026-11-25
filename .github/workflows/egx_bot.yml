@@ -1,21 +1,29 @@
-name: EGX Whale Hunter 24/7 Bot
+# EGX Whale Hunter — بوت التنبيهات (V11.5)
+# cron بتوقيت UTC؛ البوت نفسه بيقرر حسب توقيت القاهرة.
+name: EGX Alerts Bot
 on:
   schedule:
-    - cron: '*/5 * * * *'
-  workflow_dispatch:
-
+    - cron: "*/10 6-14 * * 0-4"   # الأحد..الخميس
+  workflow_dispatch: {}
+concurrency:
+  group: egx-bot
+  cancel-in-progress: false
 jobs:
-  run-bot:
+  run:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-      - name: Run Interactive Bot & Monitor
+          python-version: "3.11"
+      - name: Run bot (stdlib only)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          OWNER_USER_ID: ${{ secrets.OWNER_USER_ID }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          THNDR_FEE_RATE: "0.0008"
         run: python bg_alerts.py
