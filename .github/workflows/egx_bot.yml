@@ -1,5 +1,6 @@
 # EGX Whale Hunter — بوت التنبيهات (V11.5)
 # cron بتوقيت UTC؛ البوت نفسه بيقرر حسب توقيت القاهرة.
+# الرسوم الافتراضية من فاتورة ثاندر (0.175% + 3 ج لكل أمر) — موجودة في egx_core.py
 name: EGX Alerts Bot
 on:
   schedule:
@@ -25,5 +26,4 @@ jobs:
           OWNER_USER_ID: ${{ secrets.OWNER_USER_ID }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          THNDR_FEE_RATE: "0.0008"
         run: python bg_alerts.py
