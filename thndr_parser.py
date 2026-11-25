@@ -31,7 +31,39 @@ def _match_symbol_from_text(line_or_doc: str, known_names: dict) -> str:
 
     return ""
 
-def parse_thndr_files(uploaded_files, known_names: dict) -> list:
+_ISIN_RE = re.compile(r"\b(EG[A-Z0-9]{10})\b")
+_NUM = r"(\d+(?:\.\d+)?)"
+
+
+def _parse_thndr_invoice_page(page_txt: str, known_names: dict, isin_map: dict, src: str):
+    """فاتورة ثاندر الإنجليزية (صفحة لكل صفقة): ISIN + Buy/Sell + Total Quantity / Average Price + الرسوم."""
+    t = _normalize_text(page_txt)
+    m_isin = _ISIN_RE.search(t)
+    m_tot = re.search(r"Total Quantity\s+Average Price\s+Total Cost\s+" + _NUM + r"\s+" + _NUM + r"\s*EGP", t, re.I)
+    if not (m_isin and m_tot):
+        return None
+    isin = m_isin.group(1)
+    sym = (isin_map or {}).get(isin, "")
+    m_side = re.search(re.escape(isin) + r"\s+(Buy|Sell)\b", t, re.I) or re.search(r"\b(Buy|Sell)\b", t, re.I)
+    side = "بيع (Sell)" if (m_side and m_side.group(1).lower() == "sell") else "شراء (Buy)"
+    m_fee = re.search(r"Total Fees\s+" + _NUM, t, re.I)
+    m_date = re.search(r"\b(\d{2})/(\d{2})/(\d{4})\b", t)
+    name_m = re.search(r"Average Cost\s+(.+?)\s+" + re.escape(isin), t, re.S)
+    en_name = re.sub(r"\s+", " ", name_m.group(1)).strip() if name_m else ""
+    return {
+        "المصدر": src,
+        "التاريخ": f"{m_date.group(3)}-{m_date.group(2)}-{m_date.group(1)}" if m_date else "",
+        "العملية": side,
+        "الرمز": sym,
+        "اسم الشركة": known_names.get(sym, en_name or isin) if sym else (en_name or isin),
+        "الكمية": int(round(float(m_tot.group(1)))),
+        "السعر": round(float(m_tot.group(2)), 4),
+        "الرسوم": round(float(m_fee.group(1)), 2) if m_fee else 0.0,
+        "ISIN": isin,
+    }
+
+
+def parse_thndr_files(uploaded_files, known_names: dict, isin_map: dict = None) -> list:
     """
     يقرأ ملفات فواتير وكشوف ثاندر (PDF / CSV / XLSX) ويعيد قائمة بالعمليات المستخرجة.
     """
@@ -44,7 +76,13 @@ def parse_thndr_files(uploaded_files, known_names: dict) -> list:
         if fname.endswith(".pdf"):
             try:
                 reader = PdfReader(io.BytesIO(up.read()))
-                full_text = "\n".join([page.extract_text() or "" for page in reader.pages])
+                page_txts = [page.extract_text() or "" for page in reader.pages]
+                # V11.5: فواتير ثاندر الإنجليزية (ISIN) — صفقة لكل صفحة
+                inv_ops = [op for op in (_parse_thndr_invoice_page(pt, known_names, isin_map, up.name) for pt in page_txts) if op]
+                if inv_ops:
+                    extracted_ops.extend(inv_ops)
+                    continue
+                full_text = "\n".join(page_txts)
                 norm_txt = _normalize_text(full_text)
                 lines = [ln.strip() for ln in norm_txt.splitlines() if ln.strip()]
 

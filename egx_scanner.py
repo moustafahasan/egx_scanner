@@ -701,6 +701,25 @@ def detect_telegram_chat_id(token: str):
 # ==========================================
 # سحب بيانات البورصة المصرية الحية من TradingView (شاملة Bid/Ask Size)
 # ==========================================
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_egx_isin_map() -> dict:
+    """ISIN -> رمز السهم (فواتير ثاندر بتكتب كود ISIN مش الرمز)."""
+    body = json.dumps({"markets": ["egypt"], "columns": ["name", "isin"], "range": [0, 500]}).encode("utf-8")
+    try:
+        req = urllib.request.Request("https://scanner.tradingview.com/egypt/scan", data=body,
+                                     headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"}, method="POST")
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            raw = json.loads(resp.read().decode("utf-8"))
+        out = {}
+        for row in raw.get("data", []):
+            d = row.get("d", [])
+            if len(d) >= 2 and d[0] and d[1]:
+                out[str(d[1]).upper().strip()] = str(d[0]).upper().strip()
+        return out
+    except Exception:
+        return {}
+
+
 @st.cache_data(ttl=120, show_spinner=False)
 def fetch_full_egx_tv_scanner(nonce: int = 0):
     url = "https://scanner.tradingview.com/egypt/scan"
@@ -1827,8 +1846,10 @@ if VIEW == "portfolio":
                     for pr in portfolio_rows:
                         lines.append(f"• <b>{pr['الرمز']}</b> ({pr['اسم الشركة']}): السعر {pr['السعر الحالي']} ({pr['العائد %']:+.1f}%) | SL: {pr['وقف الخسارة']} | TP1: {pr['TP1']}")
                     ok_r, r_m = send_telegram_message(tg_token, tg_chat_id, "\n".join(lines))
-                    st.success("✅ تم الإرسال لتليجرام!") if ok_r else st.error(f"❌ {r_m}")
-
+                    if ok_r:
+                        st.success("✅ تم الإرسال لتليجرام!")
+                    else:
+                        st.error(f"❌ {r_m}")
             st.dataframe(
                 pd.DataFrame(portfolio_rows)[["الرمز", "اسم الشركة", "الرأي اللحظي", "حالة التنبيه", "الوقف المتحرك", "السكور الفني", "الكمية", "متوسط الشراء", "السعر الحالي", "صافي الربح/الخسارة", "العائد %", "وقف الخسارة", "بُعد الوقف %", "TP1", "TP2", "توفر البيانات", "الأفق الزمني", "TradingView"]],
                 width="stretch", hide_index=True,
@@ -1968,12 +1989,18 @@ if VIEW == "portfolio":
             key="thndr_docs_uploader"
         )
         if thndr_files:
-            parsed_ops = parse_thndr_files(thndr_files, EGX_ARABIC_NAMES)
+            _isin_map = fetch_egx_isin_map()
+            try:
+                parsed_ops = parse_thndr_files(thndr_files, EGX_ARABIC_NAMES, isin_map=_isin_map)
+            except TypeError:  # نسخة قديمة من thndr_parser.py
+                parsed_ops = parse_thndr_files(thndr_files, EGX_ARABIC_NAMES)
             if not parsed_ops:
                 st.warning("⚠️ لم يتم التعرف على بنود الصفقة تلقائياً داخل الملف؛ تأكد أنه فاتورة تنفيذ أو كشف حساب ثاندر.")
             else:
                 st.info(f"✅ تم استخراج **{len(parsed_ops)}** عملية من مستندات ثاندر — راجع الجدول أو عدّل أي رقم قبل الاعتماد:")
                 edited_ops = st.data_editor(pd.DataFrame(parsed_ops), width="stretch", hide_index=True, num_rows="dynamic")
+                if (edited_ops["الرمز"].astype(str).str.strip() == "").any():
+                    st.warning("⚠️ فيه سهم مقدرتش أعرف رمزه من كود ISIN — اكتب الرمز (مثلاً BTFH) في عمود الرمز قبل الاعتماد.")
                 if (edited_ops["الكمية"] <= 0).any():
                     st.warning("⚠️ فيه عمليات الكمية بتاعتها 0 (الملف ماكانش فيه كمية واضحة). اكتب الكمية الصحيحة، وإلا السطر هيتجاهل.")
                 if st.button("🚀 اعتماد العمليات وتحديث المحفظة والسحابة فوراً", type="primary", width="stretch"):
@@ -2805,8 +2832,10 @@ if VIEW == "settings":
         with sbtn2:
             if st.button("⬆️ رفع الأسهم المحلية للسحابة", width="stretch"):
                 ok_up, msg_up = sync_full_portfolio_to_cloud(_load_local_portfolio_file() or my_portfolio)
-                st.success(msg_up) if ok_up else st.error(msg_up)
-
+                if ok_up:
+                    st.success(msg_up)
+                else:
+                    st.error(msg_up)
         with st.expander("🛠️ كود SQL لإنشاء جداول Supabase (إذا كانت قاعدة البيانات جديدة)"):
             st.code("""
 create table if not exists portfolio (
@@ -2862,9 +2891,11 @@ alter table tg_alerts_log disable row level security;
         st.session_state["cfg_tg_port"] = st.checkbox("🔔 إرسال تنبيهات المحفظة تلقائياً", value=tg_auto_port)
         st.session_state["cfg_tg_whales"] = st.checkbox("🐋 تنبيه صفقات الحيتان (سكور 80+)", value=tg_auto_whales)
         if st.button("🧪 إرسال رسالة تجريبية لتليجرام", width="stretch"):
-            ok_t, msg_t = send_telegram_message(tg_t_in, tg_c_in, "🦅 <b>EGX Whale Hunter Pro V11.4</b>\n✅ النظام السحابي، الألوان الداكنة، وتحليل التدفق الأوتوماتيكي تعمل بنجاح!")
-            st.success("✅ وصلت الرسالة لتليجرام!") if ok_t else st.error(f"❌ {msg_t}")
-
+            ok_t, msg_t = send_telegram_message(tg_t_in, tg_c_in, "🦅 <b>EGX Whale Hunter Pro V11.5</b>\n✅ الربط مع تليجرام شغال!")
+            if ok_t:
+                st.success("✅ وصلت الرسالة لتليجرام!")
+            else:
+                st.error(f"❌ {msg_t}")
     with set_c2:
         st.markdown("### 🎛️ إعدادات السكانر وإدارة رأس المال")
         scope_choice = st.radio(
