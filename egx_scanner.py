@@ -19,6 +19,7 @@ from plotly.subplots import make_subplots
 import egx_core as core
 import egx_schools as schools
 import egx_theme as theme
+import egx_ui as ui
 from egx_schools import (
     run_simple_backtest, analyze_candlestick_patterns, analyze_support_resistance, compute_gann_simple,
     extract_zigzag_pivots, analyze_smc_ict, analyze_wyckoff_vsa, analyze_cpr_and_vp,
@@ -44,6 +45,7 @@ if "theme_mode" not in st.session_state:
 THEME_MODE = st.session_state["theme_mode"]
 PAL = theme.palette(THEME_MODE)
 st.markdown(theme.build_css(THEME_MODE), unsafe_allow_html=True)
+st.markdown(ui.UI_CSS, unsafe_allow_html=True)
 
 
 def _toggle_theme():
@@ -1350,38 +1352,35 @@ tg_auto_whales = bool(st.session_state.get("cfg_tg_whales", False))
 tg_badge = "📲 تليجرام متصل" if (tg_token and tg_chat_id) else "📴 تليجرام غير مربوط"
 sb_badge = "☁️ سحابة Supabase متصلة" if cloud_connected else "💾 حفظ محلي مؤقت"
 
-st.markdown(f"""
-<div class="hero-banner">
-    <div>
-        <div class="hero-title">🦅 <span class="hero-accent">EGX WHALE HUNTER</span> PRO <span class="hero-ver">V11.5</span></div>
-        <div class="hero-sub">🌐 تغطية ({len(raw_egx_tv_map)} سهم) • {sb_badge} • 💼 محفظتي ({len(portfolio_clean_syms)}) • {tg_badge} • آخر تحديث: {last_live_sync}</div>
-    </div>
-    <div class="session-pill">{session_info['badge']}</div>
-</div>
-""", unsafe_allow_html=True)
+def _cmd_submit():
+    st.session_state["cmd_pending"] = st.session_state.get("cmd_q", "")
+    st.session_state["cmd_q"] = ""
+
+
+_up_n = sum(1 for q in raw_egx_tv_map.values() if float(q.get("change") or 0) > 0)
+_dn_n = sum(1 for q in raw_egx_tv_map.values() if float(q.get("change") or 0) < 0)
+cb1, cb2, cb3, cb4, cb5 = st.columns([1.15, 2.4, 2.3, 0.62, 0.5], vertical_alignment="center")
+cb1.markdown('<div class="cmd-brand"><div class="cmd-logo">🦅</div><div><div class="cmd-name">EGX <span>Command</span></div>'
+             '<div class="cmd-ver">WHALE HUNTER • V11.5</div></div></div>', unsafe_allow_html=True)
+cb2.text_input("أمر", key="cmd_q", on_change=_cmd_submit, label_visibility="collapsed",
+               placeholder="⌘  اكتب رمز أو اسم شركة واضغط Enter… (COMI، فوري، طلعت)")
+cb3.markdown(f'''<div class="pills"><span class="pill"><span class="dot"></span>{session_info['badge']}</span>
+<span class="pill mono"><span class="t-up">▲{_up_n}</span> / <span class="t-down">▼{_dn_n}</span></span>
+<span class="pill">{"☁️ سحابة" if cloud_connected else "💾 محلي"}</span><span class="pill">{"📲 تليجرام" if (tg_token and tg_chat_id) else "📴 تليجرام"}</span>
+<span class="pill mono" title="آخر تحديث">🕒 {last_live_sync}</span></div>''', unsafe_allow_html=True)
+cb4.toggle("🌙", value=(THEME_MODE == "dark"), key="theme_toggle", on_change=_toggle_theme, help="الوضع الداكن / الفاتح")
+if cb5.button("🔄", help="تحديث الأسعار والسحابة الآن", width="stretch"):
+    st.session_state["refresh_nonce"] = refresh_nonce + 1
+    st.session_state["force_cloud_sync"] = True
+    fetch_full_egx_tv_scanner.clear()
+    st.rerun()
+live_auto = bool(st.session_state.get("cfg_live_auto", False))
 
 _tk_items = sorted(
     [(sym_, float(q.get("close") or 0), float(q.get("change") or 0), float(q.get("turnover") or 0))
      for sym_, q in raw_egx_tv_map.items() if float(q.get("close") or 0) > 0],
     key=lambda x: -x[3])[:24]
 st.markdown(theme.ticker_html([(a, b, c) for a, b, c, _ in _tk_items]), unsafe_allow_html=True)
-
-top_bar1, top_bar2, top_bar3, top_bar4 = st.columns([2.2, 1, 1, 0.75])
-with top_bar1:
-    if not cloud_connected:
-        st.caption("⚠️ **ملاحظة:** السحابة غير مربوطة حالياً؛ افحص الاتصال من تبويب **⚙️ الإعدادات** لحفظ أسهمك بشكل دائم.")
-    else:
-        st.caption("✅ **المزامنة السحابية نشطة:** جميع مراكزك وصفقاتك محفوظة بأمان على سحابة Supabase.")
-with top_bar2:
-    live_auto = st.checkbox("⚡ تحديث تلقائي (5 دقائق)", value=False)
-with top_bar3:
-    if st.button("🔄 تحديث الأسعار والسحابة الآن", width="stretch"):
-        st.session_state["refresh_nonce"] = refresh_nonce + 1
-        st.session_state["force_cloud_sync"] = True
-        fetch_full_egx_tv_scanner.clear()
-        st.rerun()
-with top_bar4:
-    st.toggle("🌙 الوضع الداكن", value=(THEME_MODE == "dark"), key="theme_toggle", on_change=_toggle_theme)
 
 # ==========================================
 # معالجة بيانات السوق والرادار
@@ -1393,7 +1392,7 @@ market_median_perf1m = float(np.median(perf1m_list)) if perf1m_list else 0.0
 _gainers = sum(1 for q in raw_egx_tv_map.values() if float(q.get("change") or 0) > 0)
 _total_st = len(raw_egx_tv_map) or 1
 market_breadth_pct = (_gainers / _total_st) * 100.0
-_vwap_above = sum(1 for q in raw_egx_tv_map.values() if float(q.get("close") or 0) > float(q.get("VWAP") or q.get("close") or 0))
+_vwap_above = sum(1 for q in raw_egx_tv_map.values() if float(q.get("close") or 0) > float(q.get("vwap") or q.get("close") or 0))  # V11.5: المفتاح كان "VWAP" فالنسبة كانت دايماً 0%
 market_vwap_breadth = (_vwap_above / _total_st) * 100.0
 if market_breadth_pct >= 60 and market_vwap_breadth >= 55:
     market_mood_txt, market_mood_cls = "🟢 إيجابي (سيطرة مشترين)", "badge-bull"
@@ -1606,117 +1605,161 @@ for w in list(st.session_state.get("watchlist", [])):
 
 TPL = theme.plotly_template(THEME_MODE)
 # ==============================================================================
-# التنقل الرئيسي المقسم إلى 4 علامات تبويب احترافية مستقلة
+# V11.5 — التنقل: شريط واحد بدل التبويبات، والصفحة المختارة بس هي اللي بتتحسب
 # ==============================================================================
-tab_radar, tab_portfolio, tab_lab, tab_settings = st.tabs([
-    f"🎯 رادار السوق والفرص ({len(filtered_results)})",
-    f"💼 محفظتي وإدارة المخاطر ({len(portfolio_rows)})",
-    "🔬 مختبر التحليل المؤسسي (10 مدارس)",
-    "⚙️ الإعدادات والربط السحابي"
-])
+_pending_q = st.session_state.pop("cmd_pending", "")
+if _pending_q:
+    _hit = ui.resolve_symbol(_pending_q, all_analyzed_map)
+    if _hit:
+        st.session_state["lab_sym"] = _hit
+        st.session_state["view"] = "lab"
+    else:
+        st.toast(f"مالقيتش سهم بالاسم ده: {_pending_q}", icon="🔎")
+if st.session_state.get("view") not in ui.NAV:
+    st.session_state["view"] = "command"
+_nav_labels = dict(ui.NAV)
+_nav_labels["opps"] = f"🃏 الفرص ({len(filtered_results)})"
+_nav_labels["portfolio"] = f"💼 محفظتي ({len(portfolio_rows)})"
+st.segmented_control("التنقل", options=list(ui.NAV), format_func=lambda k: _nav_labels[k], key="view",
+                     label_visibility="collapsed", width="stretch")
+VIEW = st.session_state.get("view") or "command"
 
-# ==============================================================================
-# التبويب 1: رادار السوق والفرص
-# ==============================================================================
-with tab_radar:
-    m1, m2, m3, m4, m5 = st.columns(5)
-    m1.markdown(f'<div class="kpi-card"><div class="kpi-label">📡 أسهم مفحوصة</div><div class="kpi-val">{len(raw_egx_tv_map)} سهم</div></div>', unsafe_allow_html=True)
-    m2.markdown(f'<div class="kpi-card"><div class="kpi-label">🎯 صفقات نشطة</div><div class="kpi-val txt-green">{len(filtered_results)}</div></div>', unsafe_allow_html=True)
-    m3.markdown(f'<div class="kpi-card"><div class="kpi-label">📈 أداء السوق (شهر)</div><div class="kpi-val {"txt-green" if market_median_perf1m>=0 else "txt-red"}">{market_median_perf1m:+.2f}%</div></div>', unsafe_allow_html=True)
-    m4.markdown(f'<div class="kpi-card" style="border-top-color:var(--gold);"><div class="kpi-label">🛡️ المخاطرة المقترحة</div><div class="kpi-val txt-gold">{capital*(risk_pct/100):,.0f} ج.م</div></div>', unsafe_allow_html=True)
-    m5.markdown(f'<div class="kpi-card" style="border-top-color:var(--up);"><div class="kpi-label">🧭 مزاج السوق</div><div class="kpi-val" style="font-size:15px;"><span class="{market_mood_cls}">{market_mood_txt}</span><div style="font-size:11px;color:var(--muted);margin-top:2px;">Breadth {market_breadth_pct:.0f}% • VWAP {market_vwap_breadth:.0f}%</div></div></div>', unsafe_allow_html=True)
-    st.write("")
 
+def _open_lab(sym):
+    st.session_state["lab_sym"] = sym
+    st.session_state["view"] = "lab"
+
+
+def _add_watch(sym, target):
+    wl = list(st.session_state.get("watchlist", []))
+    if not any(w.get("symbol") == sym and float(w.get("target", 0)) == float(target) for w in wl):
+        wl.append({"symbol": sym, "direction": "above", "target": float(target)})
+        _save_watchlist(wl)
+    st.toast(f"📌 {sym} اتضاف للمراقبة عند {target}", icon="✅")
+
+
+@st.dialog("➕ إضافة للمحفظة")
+def _add_dialog(sym):
+    r = all_analyzed_map[sym]
+    st.markdown(f"**{sym} — {r['اسم الشركة']}**  \nالمستويات محسوبة من الـ ATR وتقدر تعدلها.")
+    d1, d2 = st.columns(2)
+    q = d1.number_input("الكمية", min_value=1, value=max(1, int(r.get("الأسهم") or 1)), step=1)
+    bp = d2.number_input("سعر الشراء", min_value=0.01, value=float(r["الإغلاق"] or 0.01), step=0.01, format="%.4f")
+    d3, d4, d5 = st.columns(3)
+    sl_ = d3.number_input("الوقف", min_value=0.0, value=float(r["الوقف (2xATR)"]), step=0.01, format="%.4f")
+    t1_ = d4.number_input("TP1", min_value=0.0, value=float(r["TP1"]), step=0.01, format="%.4f")
+    t2_ = d5.number_input("TP2", min_value=0.0, value=float(r["TP2"]), step=0.01, format="%.4f")
+    risk_ = q * max(0.0, bp - sl_)
+    st.caption(f"قيمة الصفقة {q * bp:,.0f} ج.م • المخاطرة لو الوقف اتضرب {risk_:,.0f} ج.م ({risk_ / max(1.0, capital) * 100:.2f}% من رأس المال)")
+    if st.button("💾 حفظ وتفعيل الحماية", type="primary", width="stretch"):
+        _, msg_ = upsert_portfolio_item({"symbol": sym, "shares": int(q), "buy_price": float(bp), "stop_loss": float(sl_),
+                                         "tp1": float(t1_), "tp2": float(t2_), "trailing_enabled": True, "trailing_stage": 0})
+        st.session_state["last_port_msg"] = f"✅ {sym} اتضاف للمحفظة ({msg_})"
+        st.rerun()
+
+
+# ------------------------------------------------------------------------------
+# 🛰️ غرفة القيادة
+# ------------------------------------------------------------------------------
+if VIEW == "command":
+    _mood = ui.mood_score(market_breadth_pct, market_vwap_breadth)
+    _net_all = total_port_val - total_port_cost - ((total_port_cost + total_port_val) * fee_rate)
+    _day_pnl = sum(p["الكمية"] * p["السعر الحالي"] * (p["تغير اليوم %"] / (100 + p["تغير اليوم %"])) for p in portfolio_rows if p["تغير اليوم %"] > -100)
+    _risk_pct = total_open_risk / max(1.0, capital) * 100
+    k1, k2, k3, k4 = st.columns([1.35, 1, 1, 1])
+    k1.markdown(ui.mood_card(_mood, market_breadth_pct, market_vwap_breadth), unsafe_allow_html=True)
+    k2.markdown(ui.kpi("🎯 فرص فوق السكور", f"{len(filtered_results)}", f"من {len(raw_egx_tv_map)} سهم • أقوى: {filtered_results[0]['الرمز'] if filtered_results else '—'}", "accent"), unsafe_allow_html=True)
+    k3.markdown(ui.kpi("💼 محفظتي", f"{total_port_val:,.0f}", f"صافي <b class='{'t-up' if _net_all >= 0 else 't-down'}'>{_net_all:+,.0f}</b> • اليوم <b class='{'t-up' if _day_pnl >= 0 else 't-down'}'>{_day_pnl:+,.0f}</b>"), unsafe_allow_html=True)
+    k4.markdown(ui.kpi("🛡️ مخاطرة مفتوحة", f"{_risk_pct:.1f}%", f"{total_open_risk:,.0f} ج.م لو كل الوقفات اتضربت", "gold" if _risk_pct < 6 else "down"), unsafe_allow_html=True)
+
+    hm_col, feed_col = st.columns([2.3, 1], gap="medium")
+    with hm_col:
+        st.markdown('<div class="sec-t">🗺️ خريطة السوق — الحجم = السيولة • اللون = التغير • اضغط على سهم يفتح تحليله</div>', unsafe_allow_html=True)
+        _hm = [(s_, get_sector(s_) or "أخرى", float(q_.get("turnover") or 0) or float(q_.get("close") or 0) * float(q_.get("volume") or 0),
+                float(q_.get("change") or 0), float(q_.get("close") or 0)) for s_, q_ in raw_egx_tv_map.items() if float(q_.get("close") or 0) > 0]
+        _hm = sorted([x for x in _hm if x[2] > 0], key=lambda x: -x[2])[:90]
+        if _hm:
+            _fig_hm = ui.heatmap_figure(_hm, PAL, TPL, height=520)
+            _ev_hm = st.plotly_chart(_fig_hm, width="stretch", key="heatmap", on_select="rerun", selection_mode="points",
+                                     config={"displayModeBar": False})
+            try:
+                _pts = (_ev_hm or {}).get("selection", {}).get("points", [])
+                _lab_hit = (_pts[0].get("customdata") or [None])[0] if _pts else None
+            except Exception:
+                _lab_hit = None
+            if _lab_hit and _lab_hit in all_analyzed_map and st.session_state.get("_hm_last") != _lab_hit:
+                st.session_state["_hm_last"] = _lab_hit
+                st.session_state["cmd_pending"] = _lab_hit  # الـ nav اتعمل خلاص، فبنحوّل في الـ rerun الجاي
+                st.rerun()
+        else:
+            st.info("مفيش بيانات سيولة كفاية للخريطة.")
+    with feed_col:
+        st.markdown('<div class="sec-t">🐋 بث الحيتان والتنبيهات</div>', unsafe_allow_html=True)
+        st.markdown('<div class="feed">' + ui.feed_html(ui.build_feed(active_alerts, filtered_results, sent_tg_log, watchlist_alerts)) + "</div>", unsafe_allow_html=True)
+
+    st.markdown('<div class="sec-t">💼 مراكزي — من الوقف (يمين) للهدف (شمال)</div>', unsafe_allow_html=True)
+    st.markdown(ui.positions_html(portfolio_rows), unsafe_allow_html=True)
     if watchlist_alerts:
-        for _sym, _msg in watchlist_alerts:
-            st.markdown('<div class="alert-box-success">%s</div>' % _msg, unsafe_allow_html=True)
         try:
             import streamlit.components.v1 as _sc
             _sc.html("<script>try{var a=new (window.AudioContext||window.webkitAudioContext)();var o=a.createOscillator();o.connect(a.destination);o.frequency.value=880;o.start();setTimeout(function(){o.stop();},200);}catch(e){}</script>", height=0)
         except Exception:
             pass
 
-    if filtered_results:
-        st.markdown("### 🏆 أقوى 3 فرص سيولة وزخم الآن (Top 3 Radar)")
-        top_n = filtered_results[:3]
-        tcols = st.columns(len(top_n))
-        medals = ["👑 المركز #1", "🔥 المركز #2", "⚡ المركز #3"]
-        for idx, (cbox, item) in enumerate(zip(tcols, top_n)):
-            cbox.markdown(f"""
-            <a href="{item['TradingView']}" target="_blank" style="text-decoration:none;color:inherit;display:block;">
-            <div class="{'top-card top-card-gold' if idx==0 else 'top-card'}" style="cursor:pointer;">
-                <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
-                    <span class="txt-gold" style="font-weight:800;">{medals[idx]}</span>
-                    <span class="badge-bull">{item['نوع الإشارة']}</span>
-                </div>
-                <div style="display:flex;justify-content:space-between;align-items:baseline;">
-                    <span class="txt-white" style="font-size:23px;font-weight:900;">{item['الرمز']}</span>
-                    <span class="txt-cyan" style="font-size:18px;font-weight:800;">{item['السكور']}/100</span>
-                </div>
-                <div style="font-size:12px;color:var(--gold);margin-bottom:6px;font-weight:700;">{item['اسم الشركة']}</div>
-                <div style="font-size:13px;margin-bottom:8px;" class="txt-muted">
-                    السعر: <b class="txt-white">{item['الإغلاق']}</b> (<span class="{'txt-green' if item['التغير %']>=0 else 'txt-red'}">{item['التغير %']:+.2f}%</span>) • وتيرة: <b class="txt-gold">{item['الفوليوم']}x</b> • {item['الرأي اللحظي']}
-                </div>
-                <div class="top-card-strip">
-                    <span>🛑 الوقف: <b class="txt-red">{item['الوقف (2xATR)']}</b></span>
-                    <span>🎯 TP1: <b class="txt-green">{item['TP1']}</b></span>
-                    <span>💰 صافي: <b class="txt-green">{item['صافي TP1']:,.0f}</b></span>
-                </div>
-            </div>
-            </a>
-            """, unsafe_allow_html=True)
+# ------------------------------------------------------------------------------
+# 🃏 كروت الفرص
+# ------------------------------------------------------------------------------
+if VIEW == "opps":
+    of1, of2, of3, of4 = st.columns([1.6, 2.2, 1, 0.9])
+    radar_search = of1.text_input("بحث", placeholder="🔎 رمز أو اسم شركة…", label_visibility="collapsed", key="opp_q")
+    sig_filter = of2.segmented_control("نوع الإشارة", ["الكل", "🔥 تدفق سيولة", "📈 زخم سيولة", "🎯 تصحيح بلا بائع"], default="الكل",
+                                       label_visibility="collapsed", key="opp_sig") or "الكل"
+    sort_by = of3.selectbox("ترتيب", ["السكور", "السيولة (مليون)", "التغير %", "الفوليوم"], label_visibility="collapsed", key="opp_sort")
+    as_table = of4.toggle("📋 جدول", key="opp_table")
 
-        st.write("")
-        # ===== Sector Rotation Radar (V11.4) =====
-        with st.expander("🧭 Sector Rotation Radar (V11.4)", expanded=False):
-            try:
-                import plotly.express as _px
-                _sec_rows = []
-                for _r in filtered_results:
-                    _sec_rows.append({"sector": get_sector(_r["الرمز"]), "symbol": _r["الرمز"], "change": _r["التغير %"], "score": _r["السكور"], "turnover": _r["السيولة (مليون)"]})
-                if _sec_rows:
-                    _sdf = pd.DataFrame(_sec_rows)
-                    _agg = _sdf.groupby("sector").agg(avg_change=("change","mean"), avg_score=("score","mean"), total_turnover=("turnover","sum"), count=("symbol","count")).reset_index()
-                    _agg = _agg.sort_values("avg_change", ascending=False)
-                    _fig_sec = _px.bar(_agg, x="sector", y="avg_change", color="avg_score", color_continuous_scale="RdYlGn", title="Sector Rotation (avg change %, color=avg score)", text="count")
-                    _fig_sec.update_layout(height=360, template=TPL, margin=dict(l=10,r=10,t=40,b=10))
-                    st.plotly_chart(_fig_sec, width="stretch")
-                    st.dataframe(_agg, width="stretch", hide_index=True)
-                else:
-                    st.info("لا توجد بيانات.")
-            except Exception as _e:
-                st.caption("Sector radar error: %s" % _e)
+    _rows = list(filtered_results)
+    if radar_search.strip():
+        _q = radar_search.strip()
+        _rows = [r for r in _rows if _q.upper() in r["الرمز"] or _q in str(r["اسم الشركة"])]
+    if sig_filter != "الكل":
+        _rows = [r for r in _rows if r["نوع الإشارة"] == sig_filter]
+    _rows.sort(key=lambda r: r.get(sort_by, 0) or 0, reverse=True)
 
-        st.write("")
-        rf1, rf2 = st.columns([2, 1])
-        with rf1:
-            radar_search = st.text_input("🔎 تصفية سريعة بالرمز أو اسم الشركة:", placeholder="اكتب مثلاً: ABUK أو بنك أو أسمدة...")
-        with rf2:
-            sig_filter = st.selectbox("📌 نوع الإشارة:", ["الكل", "🔥 تدفق سيولة", "📈 زخم سيولة", "🎯 تصحيح بلا بائع", "📊 متابعة فنية"])
-
-        df_rad = pd.DataFrame(filtered_results)
-        if radar_search.strip():
-            q_s = radar_search.strip().upper()
-            df_rad = df_rad[df_rad["الرمز"].str.contains(q_s, na=False) | df_rad["اسم الشركة"].str.contains(radar_search.strip(), na=False)]
-        if sig_filter != "الكل":
-            df_rad = df_rad[df_rad["نوع الإشارة"] == sig_filter]
-
+    if not _rows:
+        st.info("مفيش فرص بالفلتر ده. جرّب تقلل الحد الأدنى للسكور من ⚙️ الإعدادات.")
+    elif as_table:
         st.dataframe(
-            df_rad[["الرمز", "اسم الشركة", "السكور", "الرأي اللحظي", "نوع الإشارة", "الإغلاق", "التغير %", "الفوليوم", "فرق VWAP %", "السيولة (مليون)", "الوقف (2xATR)", "TP1", "TP2", "الأسهم", "صافي TP1", "توفر البيانات", "الأفق الزمني", "TradingView"]],
-            width="stretch", hide_index=True, height=400,
-            column_config={
-                "TradingView": st.column_config.LinkColumn("شارت TV", display_text="فتح ↗"),
-                "السكور": st.column_config.ProgressColumn("السكور", min_value=0, max_value=100, format="%d"),
-                "الفوليوم": st.column_config.NumberColumn("وتيرة السيولة", format="%.2fx"),
-            }
-        )
+            pd.DataFrame(_rows)[["الرمز", "اسم الشركة", "السكور", "الرأي اللحظي", "نوع الإشارة", "الإغلاق", "التغير %", "الفوليوم", "فرق VWAP %", "السيولة (مليون)", "الوقف (2xATR)", "TP1", "TP2", "الأسهم", "صافي TP1", "الأفق الزمني", "TradingView"]],
+            width="stretch", hide_index=True, height=560,
+            column_config={"TradingView": st.column_config.LinkColumn("شارت TV", display_text="فتح ↗"),
+                           "السكور": st.column_config.ProgressColumn("السكور", min_value=0, max_value=100, format="%d"),
+                           "الفوليوم": st.column_config.NumberColumn("وتيرة السيولة", format="%.2fx")})
     else:
-        st.warning("⚠️ لا توجد أسهم تطابق شروط الفلتر الحالية؛ يمكنك تقليل الحد الأدنى للسكور من تبويب **⚙️ الإعدادات**.")
+        _shown = int(st.session_state.get("opp_n", 12))
+        _port_syms = {p["الرمز"] for p in portfolio_rows}
+        _per_row = 4
+        for i0 in range(0, min(_shown, len(_rows)), _per_row):
+            cols_ = st.columns(_per_row, gap="medium")
+            for j, r in enumerate(_rows[i0:i0 + _per_row]):
+                with cols_[j]:
+                    with st.container(border=True):
+                        st.markdown(ui.opp_card(r, rank=i0 + j if not radar_search and sig_filter == "الكل" and sort_by == "السكور" else 9,
+                                                in_portfolio=r["الرمز"] in _port_syms), unsafe_allow_html=True)
+                        b1, b2, b3 = st.columns([1.3, 1, 0.7])
+                        if b1.button("➕ للمحفظة", key=f"add_{r['الرمز']}", type="primary", width="stretch"):
+                            _add_dialog(r["الرمز"])
+                        b2.button("🔬 تحليل", key=f"lab_{r['الرمز']}", width="stretch", on_click=_open_lab, args=(r["الرمز"],))
+                        b3.button("📌", key=f"wl_{r['الرمز']}", width="stretch", help=f"راقب {r['الرمز']} عند TP1 ({r['TP1']})",
+                                  on_click=_add_watch, args=(r["الرمز"], r["TP1"]))
+        if len(_rows) > _shown:
+            if st.button(f"عرض {min(12, len(_rows) - _shown)} كمان ⬇️ (باقي {len(_rows) - _shown})", width="stretch"):
+                st.session_state["opp_n"] = _shown + 12
+                st.rerun()
 
 # ==============================================================================
 # التبويب 2: محفظتي وإدارة المخاطر (3 علامات تبويب فرعية نظيفة)
 # ==============================================================================
-with tab_portfolio:
+if VIEW == "portfolio":
     if st.session_state.get("last_port_msg"):
         st.success(st.session_state["last_port_msg"])
 
@@ -2107,7 +2150,7 @@ with tab_portfolio:
 # ==============================================================================
 # التبويب 3: مختبر التحليل المؤسسي الشامل (10 تبويبات مستقلة لكل مدرسة)
 # ==============================================================================
-with tab_lab:
+if VIEW == "lab":
     if not all_analyzed_map:
         st.warning("⚠️ جاري تحميل بيانات الأسهم...")
     else:
@@ -2115,10 +2158,13 @@ with tab_lab:
         radar_set = {r["الرمز"] for r in filtered_results}
         ordered_symbols = sorted(list(port_set)) + [r["الرمز"] for r in filtered_results if r["الرمز"] not in port_set] + sorted([s for s in all_analyzed_map if s not in port_set and s not in radar_set])
 
+        if st.session_state.get("lab_sym") not in ordered_symbols:
+            st.session_state.pop("lab_sym", None)
         selected_symbol = st.selectbox(
             f"🔬 اختر السهم للدراسة العميقة ({len(ordered_symbols)} سهم — اكتب الرمز للبحث الفوري):",
             options=ordered_symbols,
-            format_func=lambda s: f"{'💼 [محفظتي] ' if s in port_set else ('🎯 [رادار] ' if s in radar_set else '📌 ')}{s} — {all_analyzed_map[s]['اسم الشركة']} | {all_analyzed_map[s]['الرأي اللحظي']} | سكور: {all_analyzed_map[s]['السكور']}/100"
+            format_func=lambda s: f"{'💼 [محفظتي] ' if s in port_set else ('🎯 [رادار] ' if s in radar_set else '📌 ')}{s} — {all_analyzed_map[s]['اسم الشركة']} | {all_analyzed_map[s]['الرأي اللحظي']} | سكور: {all_analyzed_map[s]['السكور']}/100",
+            key="lab_sym"
         )
         selected_data = all_analyzed_map[selected_symbol]
         chg_s = selected_data["التغير %"]
@@ -2721,7 +2767,7 @@ with tab_lab:
 # ==============================================================================
 # التبويب 4: الإعدادات والربط السحابي والتليجرام
 # ==============================================================================
-with tab_settings:
+if VIEW == "settings":
     set_c1, set_c2 = st.columns(2)
 
     with set_c1:
@@ -2831,6 +2877,7 @@ alter table tg_alerts_log disable row level security;
             _native = st.context.theme.type
         except Exception:
             _native = None
+        st.toggle("⚡ تحديث تلقائي كل 5 دقايق", key="cfg_live_auto")
         if _native and _native != THEME_MODE:
             st.caption("🎨 الجداول بتاخد ألوانها من إعداد Streamlit نفسه. عشان تتطابق مع الوضع الحالي: ⋮ (فوق) ← Settings ← "
                        + ("Dark" if THEME_MODE == "dark" else "Light") + ".")
@@ -2843,34 +2890,35 @@ alter table tg_alerts_log disable row level security;
         st.session_state["cfg_min_score"] = st.slider("🎯 الحد الأدنى للسكور في جدول الرادار:", 0, 100, min_score, 5)
         st.session_state["cfg_alert_buf"] = st.slider("🔔 حساسية تنبيه قرب الوقف/الهدف (%):", 0.5, 8.0, alert_buffer_pct, 0.5)
 
-# ===== واجهة إدارة قائمة المراقبة (Watchlist UI) =====
-with st.expander("📌 قائمة المراقبة (Watchlist) — تنبيهات سعر", expanded=False):
-    wlc1, wlc2, wlc3, wlc4 = st.columns([1.2, 1, 1, 1])
-    with wlc1:
-        wl_sym = st.text_input("رمز السهم", key="wl_sym_in", placeholder="ABUK").upper().replace(".CA","").strip()
-    with wlc2:
-        wl_dir = st.selectbox("الاتجاه", ["above (>=", "below (<="], key="wl_dir_in")
-    with wlc3:
-        wl_tgt = st.number_input("السعر الهدف", min_value=0.0, value=0.0, step=0.05, key="wl_tgt_in")
-    with wlc4:
-        st.write(""); st.write("")
-        if st.button("add", key="wl_add_btn", width="stretch"):
-            if wl_sym and wl_tgt > 0:
+# ===== واجهة إدارة قائمة المراقبة (Watchlist UI) — جوه محفظتي =====
+if VIEW == "portfolio":
+    with st.expander("📌 قائمة المراقبة (Watchlist) — تنبيهات سعر", expanded=False):
+        wlc1, wlc2, wlc3, wlc4 = st.columns([1.2, 1, 1, 1])
+        with wlc1:
+            wl_sym = st.text_input("رمز السهم", key="wl_sym_in", placeholder="ABUK").upper().replace(".CA","").strip()
+        with wlc2:
+            wl_dir = st.selectbox("الاتجاه", ["above (>=", "below (<="], key="wl_dir_in")
+        with wlc3:
+            wl_tgt = st.number_input("السعر الهدف", min_value=0.0, value=0.0, step=0.05, key="wl_tgt_in")
+        with wlc4:
+            st.write(""); st.write("")
+            if st.button("add", key="wl_add_btn", width="stretch"):
+                if wl_sym and wl_tgt > 0:
+                    wl = list(st.session_state.get("watchlist", []))
+                    wl.append({"symbol": wl_sym, "direction": "above" if "above" in wl_dir else "below", "target": float(wl_tgt)})
+                    _save_watchlist(wl)
+                    st.success("تمت الإضافة.")
+                    st.rerun()
+        wl_df = pd.DataFrame(st.session_state.get("watchlist", []))
+        if not wl_df.empty:
+            st.dataframe(wl_df, width="stretch", hide_index=True)
+            del_sym = st.selectbox("حذف:", options=list(range(len(wl_df))), format_func=lambda i: "%s - %s %s" % (wl_df.iloc[i]["symbol"], wl_df.iloc[i]["direction"], wl_df.iloc[i]["target"]), key="wl_del_sel")
+            if st.button("delete", key="wl_del_btn"):
                 wl = list(st.session_state.get("watchlist", []))
-                wl.append({"symbol": wl_sym, "direction": "above" if "above" in wl_dir else "below", "target": float(wl_tgt)})
-                _save_watchlist(wl)
-                st.success("تمت الإضافة.")
-                st.rerun()
-    wl_df = pd.DataFrame(st.session_state.get("watchlist", []))
-    if not wl_df.empty:
-        st.dataframe(wl_df, width="stretch", hide_index=True)
-        del_sym = st.selectbox("حذف:", options=list(range(len(wl_df))), format_func=lambda i: "%s - %s %s" % (wl_df.iloc[i]["symbol"], wl_df.iloc[i]["direction"], wl_df.iloc[i]["target"]), key="wl_del_sel")
-        if st.button("delete", key="wl_del_btn"):
-            wl = list(st.session_state.get("watchlist", []))
-            if 0 <= del_sym < len(wl):
-                wl.pop(del_sym)
-                _save_watchlist(wl)
-                st.rerun()
+                if 0 <= del_sym < len(wl):
+                    wl.pop(del_sym)
+                    _save_watchlist(wl)
+                    st.rerun()
 
 
 if live_auto:
